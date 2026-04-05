@@ -1,11 +1,11 @@
-{{- define "infrawatch-agent.name" -}}
-{{- "infrawatch-agent" }}
+{{- define "pyxis-agent.name" -}}
+{{- "pyxis-agent" }}
 {{- end }}
 
-{{- define "infrawatch-agent.serviceAccountName" -}}
+{{- define "pyxis-agent.serviceAccountName" -}}
 {{- if .Values.serviceAccount.name }}
 {{- .Values.serviceAccount.name }}
 {{- else }}
-{{- "infrawatch-agent" }}
+{{- "pyxis-agent" }}
 {{- end }}
 {{- end }}

@@ -1,14 +1,14 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: {{ include "infrawatch-agent.name" . }}
+  name: {{ include "pyxis-agent.name" . }}
   namespace: {{ .Values.namespace }}
   labels:
-    app: {{ include "infrawatch-agent.name" . }}
+    app: {{ include "pyxis-agent.name" . }}
 spec:
   selector:
     matchLabels:
-      app: {{ include "infrawatch-agent.name" . }}
+      app: {{ include "pyxis-agent.name" . }}
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
@@ -16,12 +16,12 @@ spec:
   template:
     metadata:
       labels:
-        app: {{ include "infrawatch-agent.name" . }}
+        app: {{ include "pyxis-agent.name" . }}
       annotations:
         # Force pod restart when shipper.py changes
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
-      serviceAccountName: {{ include "infrawatch-agent.serviceAccountName" . }}
+      serviceAccountName: {{ include "pyxis-agent.serviceAccountName" . }}
       tolerations:
         {{- toYaml .Values.agent.tolerations | nindent 8 }}
       {{- with .Values.agent.nodeSelector }}
@@ -42,27 +42,27 @@ spec:
             - --sources
             - {{ .Values.agent.sources | quote }}
           env:
-            - name: INFRAWATCH_API_KEY
+            - name: PYXIS_API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: infrawatch-secret
+                  name: pyxis-secret
                   key: api-key
-            - name: INFRAWATCH_API_URL
+            - name: PYXIS_API_URL
               value: {{ .Values.agent.apiUrl | quote }}
-            - name: INFRAWATCH_NODE_NAME
+            - name: PYXIS_NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - name: INFRAWATCH_NODE_KIND
+            - name: PYXIS_NODE_KIND
               value: "k8s_node"
-            - name: INFRAWATCH_FLUSH_INTERVAL
+            - name: PYXIS_FLUSH_INTERVAL
               value: {{ .Values.agent.flushInterval | quote }}
-            - name: INFRAWATCH_BATCH_SIZE
+            - name: PYXIS_BATCH_SIZE
               value: {{ .Values.agent.batchSize | quote }}
-            - name: INFRAWATCH_HEARTBEAT_INTERVAL
+            - name: PYXIS_HEARTBEAT_INTERVAL
               value: {{ .Values.agent.heartbeatInterval | quote }}
             {{- if .Values.agent.buffer.enabled }}
-            - name: INFRAWATCH_BUFFER_DIR
+            - name: PYXIS_BUFFER_DIR
               value: {{ .Values.agent.buffer.mountPath | quote }}
             {{- end }}
           volumeMounts:
@@ -80,7 +80,7 @@ spec:
       volumes:
         - name: shipper
           configMap:
-            name: infrawatch-shipper
+            name: pyxis-shipper
         - name: varlog
           hostPath:
             path: /var/log

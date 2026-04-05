@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="InfraWatch API",
+    title="Pyxis API",
     version="0.1.0",
     description="AI-powered infrastructure observability platform",
     lifespan=lifespan,

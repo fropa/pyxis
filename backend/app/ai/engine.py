@@ -1,5 +1,5 @@
 """
-AI Engine — the brain of InfraWatch.
+AI Engine — the brain of Pyxis.
 
 Entry point: analyze_event()
   1. Run fingerprint-aware rate detection (detector.py) — no more keyword soup

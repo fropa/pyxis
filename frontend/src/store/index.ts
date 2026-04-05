@@ -35,7 +35,7 @@ export const useAppStore = create<AppState>()(
       setActiveIncidentId: (id) => set({ activeIncidentId: id }),
     }),
     {
-      name: "infrawatch-store",
+      name: "pyxis-store",
       partialize: (state) => ({ apiKey: state.apiKey }),
     }
   )

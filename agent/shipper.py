@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-InfraWatch log shipper.
+Pyxis log shipper.
 Runs on Linux hosts and K8s nodes.
 Tails log files + watches K8s events and POSTs them to the backend.
 
 Usage:
-    export INFRAWATCH_API_KEY=your-key
-    export INFRAWATCH_API_URL=https://your-infrawatch.example.com
+    export PYXIS_API_KEY=your-key
+    export PYXIS_API_URL=https://your-pyxis.example.com
     python shipper.py --sources syslog,k8s
 
 Config via env vars:
-    INFRAWATCH_API_KEY         required
-    INFRAWATCH_API_URL         default: http://localhost:8000
-    INFRAWATCH_NODE_NAME       default: hostname
-    INFRAWATCH_NODE_KIND       default: linux_host
-    INFRAWATCH_FLUSH_INTERVAL  seconds between batch flushes (default: 5)
-    INFRAWATCH_BATCH_SIZE      max events per batch (default: 100)
-    INFRAWATCH_BUFFER_DIR      dir for disk buffer when backend unreachable (default: /tmp/infrawatch)
-    INFRAWATCH_HEARTBEAT_INTERVAL  seconds between heartbeats (default: 60)
+    PYXIS_API_KEY         required
+    PYXIS_API_URL         default: http://localhost:8000
+    PYXIS_NODE_NAME       default: hostname
+    PYXIS_NODE_KIND       default: linux_host
+    PYXIS_FLUSH_INTERVAL  seconds between batch flushes (default: 5)
+    PYXIS_BATCH_SIZE      max events per batch (default: 100)
+    PYXIS_BUFFER_DIR      dir for disk buffer when backend unreachable (default: /tmp/pyxis)
+    PYXIS_HEARTBEAT_INTERVAL  seconds between heartbeats (default: 60)
 """
 
 import argparse
@@ -41,18 +41,18 @@ logging.basicConfig(
     level=logging.INFO,
     stream=sys.stdout,
 )
-log = logging.getLogger("infrawatch-shipper")
+log = logging.getLogger("pyxis-shipper")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-API_KEY = os.environ.get("INFRAWATCH_API_KEY", "")
-API_URL = os.environ.get("INFRAWATCH_API_URL", "http://localhost:8000").rstrip("/")
-NODE_NAME = os.environ.get("INFRAWATCH_NODE_NAME", socket.gethostname())
-NODE_KIND = os.environ.get("INFRAWATCH_NODE_KIND", "linux_host")
-FLUSH_INTERVAL = int(os.environ.get("INFRAWATCH_FLUSH_INTERVAL", "5"))
-BATCH_SIZE = int(os.environ.get("INFRAWATCH_BATCH_SIZE", "100"))
-BUFFER_DIR = os.environ.get("INFRAWATCH_BUFFER_DIR", "/tmp/infrawatch")
-HEARTBEAT_INTERVAL = int(os.environ.get("INFRAWATCH_HEARTBEAT_INTERVAL", "60"))
+API_KEY = os.environ.get("PYXIS_API_KEY", "")
+API_URL = os.environ.get("PYXIS_API_URL", "http://localhost:8000").rstrip("/")
+NODE_NAME = os.environ.get("PYXIS_NODE_NAME", socket.gethostname())
+NODE_KIND = os.environ.get("PYXIS_NODE_KIND", "linux_host")
+FLUSH_INTERVAL = int(os.environ.get("PYXIS_FLUSH_INTERVAL", "5"))
+BATCH_SIZE = int(os.environ.get("PYXIS_BATCH_SIZE", "100"))
+BUFFER_DIR = os.environ.get("PYXIS_BUFFER_DIR", "/tmp/pyxis")
+HEARTBEAT_INTERVAL = int(os.environ.get("PYXIS_HEARTBEAT_INTERVAL", "60"))
 
 INGEST_URL = f"{API_URL}/api/v1/ingest/"
 HEARTBEAT_URL = f"{API_URL}/api/v1/heartbeat/"
@@ -327,7 +327,7 @@ def read_stdin_pipeline() -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="InfraWatch log shipper")
+    parser = argparse.ArgumentParser(description="Pyxis log shipper")
     parser.add_argument(
         "--sources",
         default="syslog",
@@ -337,11 +337,11 @@ def main() -> None:
     args = parser.parse_args()
 
     if not API_KEY:
-        log.error("INFRAWATCH_API_KEY not set")
+        log.error("PYXIS_API_KEY not set")
         sys.exit(1)
 
     sources = [s.strip() for s in args.sources.split(",")]
-    log.info("Starting InfraWatch shipper | node=%s | sources=%s", NODE_NAME, sources)
+    log.info("Starting Pyxis shipper | node=%s | sources=%s", NODE_NAME, sources)
 
     # Start flush + heartbeat threads
     threading.Thread(target=flush_loop, daemon=True).start()

@@ -3,10 +3,10 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    APP_NAME: str = "InfraWatch"
+    APP_NAME: str = "Pyxis"
     DEBUG: bool = False
 
-    DATABASE_URL: str = "postgresql+asyncpg://infrawatch:infrawatch@localhost:5432/infrawatch"
+    DATABASE_URL: str = "postgresql+asyncpg://pyxis:pyxis@localhost:5432/pyxis"
     REDIS_URL: str = "redis://localhost:6379"
 
     ANTHROPIC_API_KEY: str = ""

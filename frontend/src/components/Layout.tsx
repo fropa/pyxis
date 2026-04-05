@@ -104,7 +104,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <Activity size={14} className="text-white" />
           </div>
           <span className="font-bold text-side-text text-[15px] tracking-tight">
-            InfraWatch
+            Pyxis
           </span>
         </div>
 

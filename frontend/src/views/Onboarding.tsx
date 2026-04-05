@@ -271,7 +271,7 @@ export default function OnboardingView() {
           <CardHeader
             icon={Key}
             title="API Key"
-            description="Your key authenticates the InfraWatch agent and the dashboard."
+            description="Your key authenticates the Pyxis agent and the dashboard."
           />
           <div className="p-5 space-y-3">
             <div className="flex gap-2">
@@ -291,7 +291,7 @@ export default function OnboardingView() {
               </p>
             ) : (
               <p className="text-[12px] text-text-3">
-                Enter your key from the InfraWatch portal.
+                Enter your key from the Pyxis portal.
               </p>
             )}
           </div>

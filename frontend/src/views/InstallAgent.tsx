@@ -43,7 +43,7 @@ const PLATFORMS: Array<{
 
 const INSTALLS_WHAT: Record<PlatformId, string[]> = {
   linux: [
-    "Downloads shipper.py to /opt/infrawatch/",
+    "Downloads shipper.py to /opt/pyxis/",
     "Creates systemd service (auto-starts on reboot)",
     "Tails /var/log/syslog, /var/log/messages, /var/log/auth.log",
     "Sends heartbeat every 60 s (silent-death detection)",
@@ -354,12 +354,12 @@ function buildCommands(opts: {
         },
         {
           label: "Or use Helm (recommended for production)",
-          command: `helm repo add infrawatch https://charts.infrawatch.io\nhelm repo update\ncurl -fsSL "${base}/helm-values?api_key=${key}&api_url=${url}&namespace=${k8sNamespace}&sources=${encodeURIComponent(k8sSources)}" -o infrawatch-values.yaml\nhelm install infrawatch-agent infrawatch/infrawatch-agent \\\n  -f infrawatch-values.yaml \\\n  -n ${k8sNamespace} --create-namespace`,
-          note: "Upgrade later with `helm upgrade infrawatch-agent …`",
+          command: `helm repo add pyxis https://charts.pyxis.io\nhelm repo update\ncurl -fsSL "${base}/helm-values?api_key=${key}&api_url=${url}&namespace=${k8sNamespace}&sources=${encodeURIComponent(k8sSources)}" -o pyxis-values.yaml\nhelm install pyxis-agent pyxis/pyxis-agent \\\n  -f pyxis-values.yaml \\\n  -n ${k8sNamespace} --create-namespace`,
+          note: "Upgrade later with `helm upgrade pyxis-agent …`",
         },
         {
           label: "Verify the DaemonSet",
-          command: `kubectl get daemonset infrawatch-agent -n ${k8sNamespace}\nkubectl get pods -n ${k8sNamespace} -l app=infrawatch-agent`,
+          command: `kubectl get daemonset pyxis-agent -n ${k8sNamespace}\nkubectl get pods -n ${k8sNamespace} -l app=pyxis-agent`,
         },
       ];
 
@@ -367,12 +367,12 @@ function buildCommands(opts: {
       return [
         {
           label: "Run the container",
-          command: `docker run -d --name infrawatch-agent --restart=always \\\n  -e INFRAWATCH_API_KEY=${key} \\\n  -e INFRAWATCH_API_URL=${url} \\\n  -e INFRAWATCH_SOURCES=syslog \\\n  -v /var/log:/var/log:ro \\\n  -v infrawatch-buffer:/var/lib/infrawatch/buffer \\\n  python:3.12-slim \\\n  bash -c "pip install -q requests && curl -fsSL ${url}/install/shipper.py | python3 - --sources syslog"`,
+          command: `docker run -d --name pyxis-agent --restart=always \\\n  -e PYXIS_API_KEY=${key} \\\n  -e PYXIS_API_URL=${url} \\\n  -e PYXIS_SOURCES=syslog \\\n  -v /var/log:/var/log:ro \\\n  -v pyxis-buffer:/var/lib/pyxis/buffer \\\n  python:3.12-slim \\\n  bash -c "pip install -q requests && curl -fsSL ${url}/install/shipper.py | python3 - --sources syslog"`,
           note: "Mounts host /var/log read-only. Buffer volume survives restarts.",
         },
         {
           label: "View logs",
-          command: "docker logs infrawatch-agent -f",
+          command: "docker logs pyxis-agent -f",
         },
       ];
 
@@ -380,7 +380,7 @@ function buildCommands(opts: {
       return [
         {
           label: "Download and run the shipper",
-          command: `curl -fsSL "${base}/shipper.py" -o ~/infrawatch-shipper.py\nexport INFRAWATCH_API_KEY=${key}\nexport INFRAWATCH_API_URL=${url}\npython3 ~/infrawatch-shipper.py --sources syslog`,
+          command: `curl -fsSL "${base}/shipper.py" -o ~/pyxis-shipper.py\nexport PYXIS_API_KEY=${key}\nexport PYXIS_API_URL=${url}\npython3 ~/pyxis-shipper.py --sources syslog`,
           note: "For development only — runs in the foreground. Ctrl+C to stop.",
         },
       ];

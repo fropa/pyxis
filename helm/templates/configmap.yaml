@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: infrawatch-shipper
+  name: pyxis-shipper
   namespace: {{ .Values.namespace }}
   labels:
-    app: {{ include "infrawatch-agent.name" . }}
+    app: {{ include "pyxis-agent.name" . }}
 data:
   shipper.py: |
     {{ .Files.Get "files/shipper.py" | nindent 4 }}

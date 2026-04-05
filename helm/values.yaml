@@ -28,7 +28,7 @@ agent:
 
   buffer:
     enabled: true
-    mountPath: /var/lib/infrawatch/buffer
+    mountPath: /var/lib/pyxis/buffer
 
 rbac:
   create: true
