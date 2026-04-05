@@ -1,0 +1,2 @@
+# No external deps needed — stdlib only (urllib, subprocess, json, threading)
+# This makes deployment simple: just copy shipper.py to the host

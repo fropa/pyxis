@@ -1,0 +1,40 @@
+# Default values — overridden by portal-generated values.yaml
+agent:
+  apiKey: ""
+  apiUrl: ""
+  sources: "k8s,syslog"
+  flushInterval: 5
+  batchSize: 100
+  heartbeatInterval: 60
+
+  image:
+    repository: python
+    tag: "3.12-slim"
+    pullPolicy: IfNotPresent
+
+  nodeSelector: {}
+  tolerations:
+    - operator: Exists   # run on all nodes including control-plane
+
+  affinity: {}
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+  buffer:
+    enabled: true
+    mountPath: /var/lib/infrawatch/buffer
+
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: ""
+
+namespace: monitoring

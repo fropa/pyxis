@@ -1,0 +1,39 @@
+{{- if .Values.rbac.create }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "infrawatch-agent.serviceAccountName" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ include "infrawatch-agent.name" . }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "infrawatch-agent.name" . }}
+  labels:
+    app: {{ include "infrawatch-agent.name" . }}
+rules:
+  - apiGroups: [""]
+    resources: ["events", "nodes", "pods", "namespaces", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "infrawatch-agent.name" . }}
+  labels:
+    app: {{ include "infrawatch-agent.name" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "infrawatch-agent.name" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "infrawatch-agent.serviceAccountName" . }}
+    namespace: {{ .Values.namespace }}
+{{- end }}

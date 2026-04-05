@@ -1,0 +1,197 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Light mode CSS variables ─────────────────────────────────────────────── */
+:root {
+  /* Surfaces — medium cool-gray, clearly not white */
+  --c-bg:           220 224 235;   /* #dce0eb  page background    */
+  --c-surface:      232 235 244;   /* #e8ebf4  cards              */
+  --c-raised:       226 229 240;   /* #e2e5f0  within-card lift   */
+  --c-border:       196 200 216;   /* #c4c8d8  borders            */
+  --c-border-strong:172 177 199;   /* #acb1c7  strong borders     */
+  --c-shadow:       15  23  42;    /* for box-shadow opacity util */
+
+  /* Text */
+  --c-text-1:  15  23  42;   /* #0f172a  headings/values    */
+  --c-text-2:  40  52  71;   /* #283447  body text          */
+  --c-text-3:  82  97 120;   /* #526178  labels/secondary   */
+  --c-text-4:  120 136 160;  /* #7888a0  placeholders       */
+
+  /* Semantic — light */
+  --c-success-bg:      240 253 244;   /* #f0fdf4 */
+  --c-success-text:    21  128  61;   /* #15803d */
+  --c-success-border:  187 247 208;   /* #bbf7d0 */
+  --c-warning-bg:      255 251 235;   /* #fffbeb */
+  --c-warning-text:    180  83   9;   /* #b45309 */
+  --c-warning-border:  253 230 138;   /* #fde68a */
+  --c-danger-bg:       254 242 242;   /* #fef2f2 */
+  --c-danger-text:     185  28  28;   /* #b91c1c */
+  --c-danger-border:   254 202 202;   /* #fecaca */
+  --c-critical-bg:     255 241 242;   /* #fff1f2 */
+  --c-critical-text:   159  18  57;   /* #9f1239 */
+  --c-critical-border: 254 205 211;   /* #fecdd3 */
+}
+
+/* ── Dark mode CSS variables ──────────────────────────────────────────────── */
+.dark {
+  /* Surfaces — neutral dark charcoal, no blue tint */
+  --c-bg:           24  25  28;   /* #18191c  page background  */
+  --c-surface:      32  33  38;   /* #202126  cards            */
+  --c-raised:       38  40  46;   /* #26282e  within-card lift */
+  --c-border:       54  56  65;   /* #363841  borders          */
+  --c-border-strong:75  78  90;   /* #4b4e5a  strong borders   */
+  --c-shadow:       0   0   0;
+
+  /* Text */
+  --c-text-1:  224 225 228;  /* #e0e1e4 */
+  --c-text-2:  160 162 170;  /* #a0a2aa */
+  --c-text-3:  100 102 112;  /* #646670 */
+  --c-text-4:   70  72  82;  /* #464852 */
+
+  /* Semantic — dark (dark-tinted bg + bright text) */
+  --c-success-bg:      20  38  24;   /* very dark green */
+  --c-success-text:    74 222 128;   /* #4ade80 */
+  --c-success-border:  32  65  38;   /* #204126 */
+  --c-warning-bg:      38  28  14;   /* very dark amber */
+  --c-warning-text:    251 191  36;   /* #fbbf24 */
+  --c-warning-border:   65  48  20;   /* #413014 */
+  --c-danger-bg:        38  18  18;   /* very dark red   */
+  --c-danger-text:     248 113 113;   /* #f87171 */
+  --c-danger-border:    65  30  30;   /* #411e1e */
+  --c-critical-bg:      38  16  20;   /* very dark crimson */
+  --c-critical-text:   251 113 133;   /* #fb7185 */
+  --c-critical-border:  65  28  35;   /* #411c23 */
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html { transition: background-color 0.2s ease, color 0.2s ease; }
+
+body {
+  background-color: rgb(var(--c-bg));
+  color: rgb(var(--c-text-1));
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar       { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgb(var(--c-border)); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--c-border-strong)); }
+
+.sidebar-scroll::-webkit-scrollbar-thumb       { background: #1e293b; }
+.sidebar-scroll::-webkit-scrollbar-thumb:hover { background: #334155; }
+
+/* ── Selection & focus ────────────────────────────────────────────────────── */
+::selection { background: rgba(79,70,229,0.15); }
+*:focus-visible {
+  outline: 2px solid rgba(79,70,229,0.5);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Animations ───────────────────────────────────────────────────────────── */
+.animate-slide-in { animation: slideIn 0.28s cubic-bezier(0.16,1,0.3,1); }
+.animate-fade-in  { animation: fadeIn  0.18s ease-out; }
+.animate-slide-up { animation: slideUp 0.2s  ease-out; }
+
+@keyframes slideIn {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+@keyframes fadeIn  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp {
+  from { transform: translateY(6px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}
+
+/* ── Status pulse ─────────────────────────────────────────────────────────── */
+@keyframes statusPulse {
+  0%, 100% { opacity: 1;   transform: scale(1);   }
+  50%      { opacity: 0.35; transform: scale(1.6); }
+}
+.status-pulse { animation: statusPulse 2s ease-in-out infinite; }
+
+/* ── React Flow ───────────────────────────────────────────────────────────── */
+.react-flow__background { background-color: rgb(var(--c-raised)); }
+.react-flow__edge-path  { stroke: rgb(var(--c-border-strong)); stroke-width: 1.5; }
+.react-flow__edge-path:hover { stroke: #4f46e5; }
+
+.react-flow__controls {
+  background: rgb(var(--c-surface)) !important;
+  border: 1px solid rgb(var(--c-border)) !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgb(var(--c-shadow) / 0.08) !important;
+}
+.react-flow__controls button {
+  background: rgb(var(--c-surface)) !important;
+  border: none !important;
+  border-bottom: 1px solid rgb(var(--c-border)) !important;
+  color: rgb(var(--c-text-3));
+  transition: all 0.15s;
+  width: 28px; height: 28px;
+}
+.react-flow__controls button:hover {
+  background: rgb(var(--c-raised)) !important;
+  color: rgb(var(--c-text-1));
+}
+.react-flow__controls button:last-child { border-bottom: none !important; }
+.react-flow__minimap {
+  border: 1px solid rgb(var(--c-border)) !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgb(var(--c-shadow) / 0.08) !important;
+}
+.react-flow__attribution { display: none; }
+
+/* ── Markdown prose ───────────────────────────────────────────────────────── */
+.prose-content h1, .prose-content h2, .prose-content h3 {
+  color: rgb(var(--c-text-1));
+  font-weight: 600;
+  line-height: 1.4;
+}
+.prose-content h2 { font-size: 0.9rem;   margin-top: 1.25rem; margin-bottom: 0.5rem;  }
+.prose-content h3 { font-size: 0.825rem; margin-top: 1rem;    margin-bottom: 0.35rem; }
+.prose-content p  { color: rgb(var(--c-text-2)); font-size: 0.825rem; margin-bottom: 0.65rem; line-height: 1.65; }
+.prose-content li { color: rgb(var(--c-text-2)); font-size: 0.825rem; margin-bottom: 0.2rem;  }
+.prose-content code {
+  font-family: 'JetBrains Mono', monospace;
+  background: rgb(var(--c-raised));
+  border: 1px solid rgb(var(--c-border));
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  font-size: 0.78rem;
+  color: #4338ca;
+}
+.dark .prose-content code { color: #818cf8; }
+.prose-content pre {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 1rem;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+}
+.prose-content pre code { background: none; border: none; padding: 0; color: #e2e8f0; }
+.prose-content strong { color: rgb(var(--c-text-1)); font-weight: 600; }
+.prose-content blockquote {
+  border-left: 3px solid #4f46e5;
+  padding-left: 0.875rem;
+  color: rgb(var(--c-text-3));
+  font-style: italic;
+  margin: 0.75rem 0;
+}
+.prose-content ul { list-style: disc;    padding-left: 1.25rem; margin: 0.5rem 0; }
+.prose-content ol { list-style: decimal; padding-left: 1.25rem; margin: 0.5rem 0; }
+.prose-content a  { color: #4f46e5; text-decoration: none; font-weight: 500; }
+.prose-content a:hover { text-decoration: underline; }
+.prose-content hr { border: none; border-top: 1px solid rgb(var(--c-border)); margin: 1rem 0; }

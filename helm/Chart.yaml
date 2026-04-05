@@ -1,0 +1,16 @@
+apiVersion: v2
+name: infrawatch-agent
+description: InfraWatch log shipper — runs as a DaemonSet on every Kubernetes node
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - monitoring
+  - observability
+  - infrawatch
+home: https://infrawatch.io
+sources:
+  - https://github.com/your-org/infrawatch
+maintainers:
+  - name: InfraWatch Team
+    email: support@infrawatch.io

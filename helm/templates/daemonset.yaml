@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "infrawatch-agent.name" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: {{ include "infrawatch-agent.name" . }}
+spec:
+  selector:
+    matchLabels:
+      app: {{ include "infrawatch-agent.name" . }}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: {{ include "infrawatch-agent.name" . }}
+      annotations:
+        # Force pod restart when shipper.py changes
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "infrawatch-agent.serviceAccountName" . }}
+      tolerations:
+        {{- toYaml .Values.agent.tolerations | nindent 8 }}
+      {{- with .Values.agent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag }}"
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          command:
+            - python3
+            - /agent/shipper.py
+            - --sources
+            - {{ .Values.agent.sources | quote }}
+          env:
+            - name: INFRAWATCH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: infrawatch-secret
+                  key: api-key
+            - name: INFRAWATCH_API_URL
+              value: {{ .Values.agent.apiUrl | quote }}
+            - name: INFRAWATCH_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: INFRAWATCH_NODE_KIND
+              value: "k8s_node"
+            - name: INFRAWATCH_FLUSH_INTERVAL
+              value: {{ .Values.agent.flushInterval | quote }}
+            - name: INFRAWATCH_BATCH_SIZE
+              value: {{ .Values.agent.batchSize | quote }}
+            - name: INFRAWATCH_HEARTBEAT_INTERVAL
+              value: {{ .Values.agent.heartbeatInterval | quote }}
+            {{- if .Values.agent.buffer.enabled }}
+            - name: INFRAWATCH_BUFFER_DIR
+              value: {{ .Values.agent.buffer.mountPath | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: shipper
+              mountPath: /agent
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            {{- if .Values.agent.buffer.enabled }}
+            - name: buffer
+              mountPath: {{ .Values.agent.buffer.mountPath }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+      volumes:
+        - name: shipper
+          configMap:
+            name: infrawatch-shipper
+        - name: varlog
+          hostPath:
+            path: /var/log
+        {{- if .Values.agent.buffer.enabled }}
+        - name: buffer
+          emptyDir: {}
+        {{- end }}
+      hostPID: false
+      hostNetwork: false
+      terminationGracePeriodSeconds: 10

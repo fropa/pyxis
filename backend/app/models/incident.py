@@ -1,0 +1,52 @@
+import uuid
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import DateTime, ForeignKey, JSON, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.database import Base
+
+
+class Incident(Base):
+    """An AI-detected or manually declared incident."""
+
+    __tablename__ = "incidents"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id: Mapped[str] = mapped_column(String, ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+
+    title: Mapped[str] = mapped_column(String(512))
+    severity: Mapped[str] = mapped_column(String(16), default="medium")
+    # severity: low | medium | high | critical
+
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    # status: open | investigating | resolved | false_positive
+
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # AI-generated root cause analysis
+    rca_summary: Mapped[str | None] = mapped_column(Text)
+    rca_full: Mapped[str | None] = mapped_column(Text)        # Full markdown from Claude
+    rca_confidence: Mapped[float | None] = mapped_column()    # 0.0–1.0
+
+    # Which IaC chunks were cited in the RCA
+    cited_knowledge: Mapped[list[Any]] = mapped_column(JSON, default=list)
+
+    # Pattern reference: if this matches a past incident
+    similar_incident_id: Mapped[str | None] = mapped_column(String, ForeignKey("incidents.id", ondelete="SET NULL"))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class IncidentNode(Base):
+    """Junction: which nodes are involved in an incident."""
+
+    __tablename__ = "incident_nodes"
+
+    incident_id: Mapped[str] = mapped_column(String, ForeignKey("incidents.id", ondelete="CASCADE"), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String, ForeignKey("nodes.id", ondelete="CASCADE"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), default="affected")
+    # role: root_cause | affected | related
