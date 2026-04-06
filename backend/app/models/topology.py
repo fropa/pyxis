@@ -50,7 +50,11 @@ class Edge(Base):
     target_id: Mapped[str] = mapped_column(String, ForeignKey("nodes.id", ondelete="CASCADE"))
 
     kind: Mapped[str] = mapped_column(String(64), default="network")
-    # kind: network | dependency | calls | routes_to
+    # kind: network | dependency | calls | co-deployed | co-occurrence
+
+    confidence: Mapped[float] = mapped_column(default=0.7)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    observation_count: Mapped[int] = mapped_column(default=1)
 
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

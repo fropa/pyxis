@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
-import { AlertTriangle, CheckCircle, Clock, Zap, Search, ChevronRight } from "lucide-react";
+import { AlertTriangle, CheckCircle, Clock, Zap, Search, ChevronRight, Flame } from "lucide-react";
 import { api, getErrorMessage } from "../api/client";
 import { useAppStore } from "../store";
 import IncidentPanel from "../components/incidents/IncidentPanel";
@@ -146,9 +146,17 @@ export default function IncidentsView() {
                   <StatusDot status={inc.status} size="md" className="flex-shrink-0" />
 
                   <div className="flex-1 min-w-0">
-                    <p className="text-[13px] font-semibold text-text-1 group-hover:text-accent-text truncate transition-colors">
-                      {inc.title}
-                    </p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-[13px] font-semibold text-text-1 group-hover:text-accent-text truncate transition-colors">
+                        {inc.title}
+                      </p>
+                      {inc.storm_size != null && inc.storm_size > 1 && (
+                        <span className="flex-shrink-0 flex items-center gap-1 text-[10px] font-semibold text-warning-text bg-warning/10 border border-warning/20 px-1.5 py-0.5 rounded-md">
+                          <Flame size={9} />
+                          Storm ×{inc.storm_size}
+                        </span>
+                      )}
+                    </div>
                     {inc.rca_summary && (
                       <p className="text-[12px] text-text-3 mt-0.5 line-clamp-1">
                         {inc.rca_summary}

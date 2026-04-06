@@ -1,0 +1,100 @@
+# Pyxis — sample Nginx reverse proxy config
+# Copy to /etc/nginx/sites-available/pyxis and symlink to sites-enabled/
+# Replace "pyxis.example.com" with your actual domain.
+#
+# Assumes:
+#   - Backend (FastAPI) runs on 127.0.0.1:8000
+#   - Frontend (Vite / built static files) served from /var/www/pyxis
+#     OR frontend dev server on 127.0.0.1:5173 (uncomment the dev block)
+#   - SSL managed by Certbot (run: certbot --nginx -d pyxis.example.com)
+
+upstream pyxis_api {
+    server 127.0.0.1:8000;
+    keepalive 32;
+}
+
+# Redirect HTTP → HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name pyxis.example.com;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name pyxis.example.com;
+
+    # SSL — managed by Certbot (auto-filled on first run)
+    ssl_certificate     /etc/letsencrypt/live/pyxis.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pyxis.example.com/privkey.pem;
+    include             /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+    # Gzip
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml image/svg+xml;
+    gzip_min_length 1024;
+
+    client_max_body_size 20M;
+
+    # ── Frontend (built static files) ──────────────────────────────────────────
+    root /var/www/pyxis;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # ── Or use Vite dev server (comment out the block above, uncomment below) ──
+    # location / {
+    #     proxy_pass http://127.0.0.1:5173;
+    #     proxy_http_version 1.1;
+    #     proxy_set_header Upgrade $http_upgrade;
+    #     proxy_set_header Connection "upgrade";
+    #     proxy_set_header Host $host;
+    # }
+
+    # ── API ────────────────────────────────────────────────────────────────────
+    location /api/ {
+        proxy_pass         http://pyxis_api;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+
+    # ── WebSocket ──────────────────────────────────────────────────────────────
+    location /ws/ {
+        proxy_pass         http://pyxis_api;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade    $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host       $host;
+        proxy_read_timeout 3600s;   # keep WS connections alive for 1 hour
+        proxy_send_timeout 3600s;
+    }
+
+    # ── Install endpoint (used by the one-liner agent installer) ───────────────
+    location /install {
+        proxy_pass       http://pyxis_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+}

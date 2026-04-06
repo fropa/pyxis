@@ -1,6 +1,6 @@
 import uuid
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import anthropic
@@ -33,6 +33,9 @@ class IncidentOut(BaseModel):
     rca_confidence: float | None
     cited_knowledge: list[Any]
     similar_incident_id: str | None
+    postmortem: str | None = None
+    parent_incident_id: str | None = None
+    storm_size: int = 1
 
     class Config:
         from_attributes = True
@@ -182,3 +185,69 @@ Be specific with commands. Use code blocks for all CLI commands."""
             await db.commit()
     except Exception:
         pass  # runbook generation should never break the resolve flow
+
+
+class PostmortemResponse(BaseModel):
+    postmortem: str
+
+
+@router.post("/{incident_id}/postmortem", response_model=PostmortemResponse)
+async def generate_postmortem(
+    incident_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Incident).where(Incident.id == incident_id, Incident.tenant_id == tenant.id)
+    )
+    incident = result.scalar_one_or_none()
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    # Return cached post-mortem if already generated
+    if incident.postmortem:
+        return PostmortemResponse(postmortem=incident.postmortem)
+
+    duration = ""
+    if incident.resolved_at and incident.started_at:
+        secs = int((incident.resolved_at - incident.started_at.replace(tzinfo=timezone.utc)
+                    if incident.started_at.tzinfo is None
+                    else incident.resolved_at - incident.started_at).total_seconds())
+        duration = f"{secs // 60}m {secs % 60}s"
+
+    prompt = f"""Write a professional incident post-mortem document.
+
+## Incident Data
+- **Title:** {incident.title}
+- **Severity:** {incident.severity}
+- **Status:** {incident.status}
+- **Started:** {incident.started_at.isoformat()}
+- **Resolved:** {incident.resolved_at.isoformat() if incident.resolved_at else "still open"}
+- **Duration:** {duration or "unknown"}
+
+## Root Cause Analysis
+{incident.rca_full or incident.rca_summary or "No RCA available"}
+
+Write a post-mortem with these sections:
+1. **Executive Summary** — 2-3 sentences for non-technical stakeholders
+2. **Timeline** — key events with timestamps (infer from the data above)
+3. **Root Cause** — technical explanation
+4. **Impact** — what was affected and for how long
+5. **What Went Well** — detection, response, communication
+6. **What Could Be Improved** — gaps identified
+7. **Action Items** — concrete follow-up tasks with suggested owners (use checkboxes)
+
+Be professional, blameless, and factual."""
+
+    message = await _anthropic.messages.create(
+        model=settings.CLAUDE_MODEL,
+        max_tokens=2048,
+        system="You are writing a blameless post-mortem for an engineering team. Be factual, professional, and constructive.",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = message.content[0].text
+
+    incident.postmortem = text
+    await db.commit()
+
+    return PostmortemResponse(postmortem=text)

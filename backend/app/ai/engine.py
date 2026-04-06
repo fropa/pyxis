@@ -32,6 +32,7 @@ from app.ai.detector import (
     register_open_incident,
 )
 from app.ai.patterns import build_pattern_context, highest_severity
+from app.ai.storm_detector import check_and_group_storm
 
 settings = get_settings()
 _anthropic = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -101,6 +102,11 @@ async def analyze_event(event: LogEvent, tenant_id: str, db: AsyncSession) -> No
     # Open new incident
     incident = await _open_incident(event, tenant_id, db)
     await register_open_incident(tenant_id, event.fingerprint, incident.id, r)
+
+    # Storm detection: group related incidents under one parent
+    is_storm_child = await check_and_group_storm(incident, tenant_id, r, db)
+    if is_storm_child:
+        return  # Storm children skip RCA — the parent incident already has it
 
     # Enqueue RCA to ARQ worker (not BackgroundTasks — retried on failure)
     pool = await _get_arq_pool()
@@ -204,6 +210,8 @@ async def _run_rca(
         "If the diagnostic context includes specific checks, work through them. "
         "If IaC configuration is present, cite file paths. "
         "If it's not, focus on the log evidence and known patterns. "
+        "ALWAYS include a Diagnostic Commands section with real, runnable shell commands "
+        "(kubectl, systemctl, journalctl, docker, curl, etc.) the on-call engineer should run first. "
         "Format your response as Markdown with clear sections."
     )
 
@@ -224,8 +232,8 @@ async def _run_rca(
 ## Known Failure Pattern Diagnostics
 {pattern_context or "(no specific pattern matched — use general SRE reasoning)"}
 
-## IaC / Pipeline Configuration (Pro tier — empty if not indexed)
-{iac_context or "_Not available in starter tier. Connect repos in Knowledge Base for file-level analysis._"}
+## IaC / Pipeline Configuration
+{iac_context or "_Not available. Connect repos in Knowledge Base for file-level analysis._"}
 
 ## Past Similar Incidents
 {past_context}
@@ -234,9 +242,10 @@ async def _run_rca(
 Please provide:
 1. **Root Cause** — what specifically caused this, based on available evidence
 2. **Affected Components** — which services/nodes are impacted
-3. **Immediate Fix** — specific commands or steps to resolve now
-4. **Prevention** — what to change to prevent recurrence
-5. **Confidence** — your confidence level (0–100%) and what would increase it"""
+3. **Diagnostic Commands** — exact shell commands to run RIGHT NOW to confirm and investigate (use code blocks)
+4. **Immediate Fix** — specific commands or steps to resolve
+5. **Prevention** — what to change to prevent recurrence
+6. **Confidence** — your confidence level (0–100%) and what would increase it"""
 
     message = await _anthropic.messages.create(
         model=settings.CLAUDE_MODEL,

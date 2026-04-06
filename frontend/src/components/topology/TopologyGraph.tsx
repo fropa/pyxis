@@ -56,7 +56,18 @@ const KIND_META: Record<string, { abbrev: string; label: string; bg: string; tex
   aws_ec2:        { abbrev: "EC", label: "EC2",         bg: "bg-orange-50",  text: "text-orange-600" },
   aws_rds:        { abbrev: "DB", label: "RDS",         bg: "bg-green-50",   text: "text-green-600"  },
   ci_runner:      { abbrev: "CI", label: "CI Runner",   bg: "bg-pink-50",    text: "text-pink-600"   },
+  service:        { abbrev: "SV", label: "Service",     bg: "bg-violet-50",  text: "text-violet-600" },
   unknown:        { abbrev: "?",  label: "Unknown",     bg: "bg-slate-100",  text: "text-slate-400"  },
+};
+
+// ── Edge styling by kind ───────────────────────────────────────────────────────
+
+const EDGE_COLOR: Record<string, string> = {
+  calls:         "#6366f1",  // indigo — confirmed call chain
+  dependency:    "#d97706",  // amber — inferred dependency
+  "co-deployed": "#64748b",  // slate — deployment correlation
+  "co-occurrence": "#9333ea", // purple — incident co-occurrence
+  network:       "#94a3b8",  // default
 };
 
 // ── Custom node ────────────────────────────────────────────────────────────────
@@ -143,16 +154,31 @@ function buildFlowNodes(nodes: TopologyNode[]): Node[] {
 }
 
 function buildFlowEdges(edges: Topology["edges"]): Edge[] {
-  return edges.map((e) => ({
-    id: e.id,
-    source: e.source_id,
-    target: e.target_id,
-    label: e.kind,
-    style: { stroke: "#e2e8f0", strokeWidth: 1.5 },
-    labelStyle: { fill: "#94a3b8", fontSize: 10 },
-    labelBgStyle: { fill: "#f8fafc", fillOpacity: 0.9, rx: 4 },
-    labelBgPadding: [4, 6] as [number, number],
-  }));
+  return edges.map((e) => {
+    const color = EDGE_COLOR[e.kind] ?? EDGE_COLOR.network;
+    const confidence = e.confidence ?? 0.7;
+    // Map confidence [0.5–1.0] → opacity [0.3–1.0]
+    const opacity = 0.3 + confidence * 0.7;
+    const strokeWidth = confidence >= 0.9 ? 2 : confidence >= 0.7 ? 1.5 : 1;
+    const confPct = Math.round(confidence * 100);
+    const label = confidence < 0.95 ? `${e.kind} ${confPct}%` : e.kind;
+
+    return {
+      id: e.id,
+      source: e.source_id,
+      target: e.target_id,
+      label,
+      style: {
+        stroke: color,
+        strokeWidth,
+        opacity,
+      },
+      labelStyle: { fill: color, fontSize: 9, fontWeight: 500, opacity },
+      labelBgStyle: { fill: "#ffffff", fillOpacity: 0.85, rx: 3 },
+      labelBgPadding: [3, 5] as [number, number],
+      markerEnd: { type: "arrowclosed" as const, color, width: 14, height: 14 },
+    };
+  });
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────

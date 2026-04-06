@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.core.database import engine, Base
 from app.core.redis import close_redis
-from app.api.routes import ingest, topology, incidents, knowledge, ws, tenants, heartbeat, notifications, install, runbooks, deploy_events, analyze, traces
+from app.api.routes import ingest, topology, incidents, knowledge, ws, tenants, heartbeat, notifications, install, runbooks, deploy_events, analyze, traces, assistant
 
 settings = get_settings()
 
@@ -18,6 +18,16 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
+        # Schema migrations (idempotent — safe to run on every startup)
+        await conn.execute(text("ALTER TABLE incidents ADD COLUMN IF NOT EXISTS postmortem TEXT"))
+        await conn.execute(text(
+            "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS parent_incident_id VARCHAR "
+            "REFERENCES incidents(id) ON DELETE SET NULL"
+        ))
+        await conn.execute(text("ALTER TABLE incidents ADD COLUMN IF NOT EXISTS storm_size INTEGER DEFAULT 1"))
+        await conn.execute(text("ALTER TABLE edges ADD COLUMN IF NOT EXISTS confidence FLOAT DEFAULT 0.7"))
+        await conn.execute(text("ALTER TABLE edges ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ DEFAULT NOW()"))
+        await conn.execute(text("ALTER TABLE edges ADD COLUMN IF NOT EXISTS observation_count INTEGER DEFAULT 1"))
 
     yield
 
@@ -53,6 +63,7 @@ app.include_router(runbooks.router,      prefix="/api/v1/runbooks",       tags=[
 app.include_router(deploy_events.router, prefix="/api/v1/deploy-events",  tags=["deploy-events"])
 app.include_router(analyze.router,       prefix="/api/v1/analyze",        tags=["analyze"])
 app.include_router(traces.router,        prefix="/api/v1/traces",         tags=["traces"])
+app.include_router(assistant.router,     prefix="/api/v1/assistant",      tags=["assistant"])
 
 
 @app.get("/health")

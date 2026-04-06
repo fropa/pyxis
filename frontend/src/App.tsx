@@ -8,6 +8,7 @@ import InstallAgent from "./views/InstallAgent";
 import AdminView from "./views/Admin";
 import PlaygroundView from "./views/Playground";
 import TracesView from "./views/Traces";
+import AssistantView from "./views/Assistant";
 import { useAppStore } from "./store";
 
 export default function App() {
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="/admin" element={<AdminView />} />
           <Route path="/playground" element={<PlaygroundView />} />
           <Route path="/traces" element={<TracesView />} />
+          <Route path="/assistant" element={<AssistantView />} />
         </Routes>
       </Layout>
     </BrowserRouter>

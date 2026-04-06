@@ -12,6 +12,7 @@ from arq.connections import RedisSettings
 from app.core.config import get_settings
 from app.tasks.rca import run_rca_task, check_silent_nodes_task
 from app.tasks.autoresolve import auto_resolve_incidents
+from app.tasks.topology_discovery import discover_topology_task
 
 settings = get_settings()
 
@@ -41,6 +42,12 @@ class WorkerSettings:
             "name": "auto_resolve",
             "coroutine": auto_resolve_incidents,
             "minute": {i for i in range(0, 60, 5)},
+        },
+        # Auto-discover topology every 10 minutes
+        {
+            "name": "topology_discovery",
+            "coroutine": discover_topology_task,
+            "minute": {i for i in range(0, 60, 10)},
         },
     ]
 

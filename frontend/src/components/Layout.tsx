@@ -1,7 +1,7 @@
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard, Network, AlertTriangle,
-  Download, Settings, Activity, Sun, Moon, FlaskConical, Shield,
+  Download, Settings, Activity, Sun, Moon, FlaskConical, Shield, MessageSquare,
 } from "lucide-react";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { useAppStore } from "../store";
@@ -14,6 +14,7 @@ const NAV_MAIN = [
   { to: "/topology",   label: "Topology",      icon: Network },
   { to: "/incidents",  label: "Incidents",     icon: AlertTriangle },
   { to: "/traces",     label: "APM / Traces",  icon: Activity },
+  { to: "/assistant",  label: "Assistant",     icon: MessageSquare },
 ];
 
 const NAV_SETUP = [

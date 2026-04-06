@@ -47,6 +47,9 @@ export interface TopologyEdge {
   source_id: string;
   target_id: string;
   kind: string;
+  confidence: number;
+  last_seen: string | null;
+  observation_count: number;
 }
 
 export interface Topology {
@@ -66,6 +69,9 @@ export interface Incident {
   rca_confidence: number | null;
   cited_knowledge: string[];
   similar_incident_id: string | null;
+  postmortem: string | null;
+  parent_incident_id: string | null;
+  storm_size: number;
 }
 
 export interface KnowledgeSource {
@@ -82,6 +88,8 @@ export interface KnowledgeSource {
 export const api = {
   topology: {
     get: () => apiClient.get<Topology>("/api/v1/topology/").then((r) => r.data),
+    discover: () => apiClient.post<{ edges_found: number; nodes_found: number; sources: string[]; last_run: string }>("/api/v1/topology/discover").then((r) => r.data),
+    stats: () => apiClient.get<{ node_count: number; edge_count: number; auto_discovered_nodes: number; edge_kinds: Record<string, number> }>("/api/v1/topology/stats").then((r) => r.data),
   },
   incidents: {
     list: (params?: { status_filter?: string }) =>
@@ -90,6 +98,8 @@ export const api = {
       apiClient.get<Incident>(`/api/v1/incidents/${id}`).then((r) => r.data),
     update: (id: string, payload: Partial<Incident>) =>
       apiClient.patch<Incident>(`/api/v1/incidents/${id}`, payload).then((r) => r.data),
+    postmortem: (id: string) =>
+      apiClient.post<{ postmortem: string }>(`/api/v1/incidents/${id}/postmortem`).then((r) => r.data),
   },
   knowledge: {
     listSources: () =>
@@ -140,6 +150,10 @@ export const api = {
       apiClient.get<TimeseriesPoint[]>(`/api/v1/traces/services/${encodeURIComponent(service)}/timeseries`, { params: { hours } }).then((r) => r.data),
     recent: (params?: { hours?: number; service?: string; limit?: number }) =>
       apiClient.get<TraceOut[]>("/api/v1/traces/recent", { params }).then((r) => r.data),
+  },
+  assistant: {
+    chat: (payload: { question: string; history: { role: string; content: string }[] }) =>
+      apiClient.post<{ answer: string }>("/api/v1/assistant/chat", payload).then((r) => r.data),
   },
 };
 

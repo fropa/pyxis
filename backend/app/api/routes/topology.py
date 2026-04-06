@@ -1,11 +1,13 @@
 """
-Topology graph read endpoints — consumed by the frontend React Flow canvas.
+Topology graph endpoints — consumed by the React Flow canvas.
 """
+from datetime import datetime, timezone
+from typing import Any
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import Any
 
 from app.core.database import get_db
 from app.core.deps import get_current_tenant
@@ -35,6 +37,9 @@ class EdgeOut(BaseModel):
     source_id: str
     target_id: str
     kind: str
+    confidence: float
+    last_seen: datetime | None
+    observation_count: int
 
     class Config:
         from_attributes = True
@@ -43,6 +48,20 @@ class EdgeOut(BaseModel):
 class TopologyOut(BaseModel):
     nodes: list[NodeOut]
     edges: list[EdgeOut]
+
+
+class DiscoverStats(BaseModel):
+    edges_found: int
+    nodes_found: int
+    sources: list[str]
+    last_run: str
+
+
+class TopologyStats(BaseModel):
+    node_count: int
+    edge_count: int
+    auto_discovered_nodes: int
+    edge_kinds: dict[str, int]
 
 
 @router.get("/", response_model=TopologyOut)
@@ -58,7 +77,11 @@ async def get_topology(
     )
 
     nodes = nodes_result.scalars().all()
-    edges = edges_result.scalars().all()
+    # Filter out edges hidden by the pruner
+    edges = [
+        e for e in edges_result.scalars().all()
+        if not (e.metadata_ or {}).get("hidden")
+    ]
 
     return TopologyOut(
         nodes=[NodeOut(
@@ -77,5 +100,59 @@ async def get_topology(
             source_id=e.source_id,
             target_id=e.target_id,
             kind=e.kind,
+            confidence=e.confidence if e.confidence is not None else 0.7,
+            last_seen=e.last_seen,
+            observation_count=e.observation_count if e.observation_count is not None else 1,
         ) for e in edges],
+    )
+
+
+@router.post("/discover", response_model=DiscoverStats)
+async def trigger_discovery(
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger topology discovery for this tenant."""
+    from app.tasks.topology_discovery import _discover_for_tenant
+    stats = await _discover_for_tenant(tenant.id, db)
+    return DiscoverStats(
+        edges_found=stats["edges_found"],
+        nodes_found=stats["nodes_found"],
+        sources=stats["sources"],
+        last_run=stats["last_run"],
+    )
+
+
+@router.get("/stats", response_model=TopologyStats)
+async def get_topology_stats(
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    node_count_r = await db.execute(
+        select(func.count(Node.id)).where(Node.tenant_id == tenant.id, Node.deleted_at.is_(None))
+    )
+    node_count = node_count_r.scalar_one_or_none() or 0
+
+    auto_count_r = await db.execute(
+        select(func.count(Node.id)).where(
+            Node.tenant_id == tenant.id,
+            Node.deleted_at.is_(None),
+            Node.kind == "service",
+        )
+    )
+    auto_count = auto_count_r.scalar_one_or_none() or 0
+
+    edges_r = await db.execute(
+        select(Edge.kind, func.count(Edge.id).label("cnt"))
+        .where(Edge.tenant_id == tenant.id)
+        .group_by(Edge.kind)
+    )
+    edge_kinds = {row.kind: row.cnt for row in edges_r}
+    edge_count = sum(edge_kinds.values())
+
+    return TopologyStats(
+        node_count=node_count,
+        edge_count=edge_count,
+        auto_discovered_nodes=auto_count,
+        edge_kinds=edge_kinds,
     )
