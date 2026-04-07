@@ -2,7 +2,7 @@
 set -e
 
 REPO="https://github.com/fropa/pyxis.git"
-DIR="pyxis"
+DIR="/opt/pyxis"
 BOLD="\033[1m"
 GREEN="\033[32m"
 YELLOW="\033[33m"
@@ -98,10 +98,10 @@ fi
 # ── 4. Clone or update repo ────────────────────────────────────────────────────
 if [ -d "$DIR" ]; then
     info "Updating Pyxis..."
-    cd "$DIR" && git pull --quiet
+    cd "$DIR" && sudo git pull --quiet
 else
-    info "Cloning Pyxis..."
-    git clone --quiet "$REPO" "$DIR"
+    info "Cloning Pyxis into $DIR..."
+    sudo git clone --quiet "$REPO" "$DIR"
     cd "$DIR"
 fi
 
