@@ -67,6 +67,5 @@ app.include_router(assistant.router,     prefix="/api/v1/assistant",      tags=[
 
 
 @app.get("/health")
-@app.get("/api/v1/health")
 async def health():
     return {"status": "ok", "version": "0.1.0"}

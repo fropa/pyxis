@@ -107,20 +107,18 @@ docker compose up -d --build
 
 # ── 6. Wait for backend ────────────────────────────────────────────────────────
 info "Waiting for backend to be ready..."
-for i in $(seq 1 40); do
-    if curl -sf http://localhost/api/v1/health > /dev/null 2>&1 || \
-       curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+for i in $(seq 1 30); do
+    if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
         break
     fi
-    sleep 3
+    sleep 2
 done
 
-if ! curl -sf http://localhost/api/v1/health > /dev/null 2>&1 && \
-   ! curl -sf http://localhost:8000/health > /dev/null 2>&1; then
+if ! curl -sf http://localhost:8000/health > /dev/null 2>&1; then
     warn "Backend didn't respond in time. Check logs: docker compose logs backend"
 else
     # ── 7. Create default tenant ───────────────────────────────────────────────
-    RESPONSE=$(curl -sf -X POST http://localhost/api/v1/tenants/ \
+    RESPONSE=$(curl -sf -X POST http://localhost:8000/api/v1/tenants/ \
         -H "Content-Type: application/json" \
         -d '{"name":"default","contact_email":"admin@localhost"}' 2>/dev/null || echo "")
 
@@ -128,18 +126,21 @@ else
         API_KEY=$(echo "$RESPONSE" | grep -o '"api_key":"[^"]*"' | cut -d'"' -f4)
     else
         # Tenant may already exist — fetch it
-        API_KEY=$(curl -sf http://localhost/api/v1/tenants/ 2>/dev/null | grep -o '"api_key":"[^"]*"' | head -1 | cut -d'"' -f4)
+        API_KEY=$(curl -sf http://localhost:8000/api/v1/tenants/ 2>/dev/null | grep -o '"api_key":"[^"]*"' | head -1 | cut -d'"' -f4)
     fi
 
     echo ""
     echo -e "${BOLD}${GREEN}✓ Pyxis is running!${RESET}"
     echo ""
-    echo -e "  Dashboard   →  ${BOLD}http://$(hostname -I | awk '{print $1}')${RESET}"
+    echo -e "  Dashboard   →  ${BOLD}http://localhost:5173${RESET}"
+    echo -e "  API docs    →  ${BOLD}http://localhost:8000/docs${RESET}"
     echo ""
     if [ -n "$API_KEY" ]; then
-        echo -e "  API key:  ${BOLD}${API_KEY}${RESET}"
-        echo "  (paste into Settings → API key, or use the browser console one-liner below)"
+        echo -e "  Your API key:  ${BOLD}${API_KEY}${RESET}"
         echo ""
+        echo "  Paste this key into the Settings page in the dashboard."
+        echo ""
+        echo "  Or set it immediately in the browser console:"
         echo -e "  ${YELLOW}localStorage.setItem('pyxis-store', JSON.stringify({state:{apiKey:'${API_KEY}'},version:0})); location.reload();${RESET}"
     fi
     echo ""
