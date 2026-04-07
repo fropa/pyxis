@@ -98,11 +98,18 @@ def _flush_locked() -> None:
 
 def flush_loop() -> None:
     """Flush in-memory buffer and drain any disk-buffered files."""
+    ticks = 0
     while True:
         time.sleep(FLUSH_INTERVAL)
         with _lock:
+            n = len(_buffer)
             _flush_locked()
+            if n:
+                log.info("Flushed %d events to backend", n)
         _drain_disk_buffer()
+        ticks += 1
+        if ticks % 12 == 0:  # every ~60s at 5s interval
+            log.info("Shipper alive | node=%s | ip=%s", NODE_NAME, NODE_IP or "unknown")
 
 
 def _send(events: list[dict[str, Any]]) -> None:
@@ -116,9 +123,14 @@ def _send(events: list[dict[str, Any]]) -> None:
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status != 202:
-                log.warning("Unexpected status %d from ingest endpoint", resp.status)
+                log.warning("Ingest: unexpected status %d", resp.status)
+            else:
+                log.debug("Ingest: sent %d events → %d", len(events), resp.status)
+    except urllib.error.HTTPError as e:
+        log.error("Ingest: HTTP %d from backend (%s) — buffering %d events", e.code, e.reason, len(events))
+        _write_disk_buffer(events)
     except urllib.error.URLError as e:
-        log.warning("Backend unreachable (%s) — writing %d events to disk buffer", e, len(events))
+        log.warning("Ingest: backend unreachable (%s) — buffering %d events", e, len(events))
         _write_disk_buffer(events)
 
 
@@ -172,7 +184,8 @@ def _send_heartbeat() -> None:
         headers={"Content-Type": "application/json", "X-API-Key": API_KEY},
         method="POST",
     )
-    urllib.request.urlopen(req, timeout=5)
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        log.debug("Heartbeat sent → %d", resp.status)
 
 
 def heartbeat_loop() -> None:
@@ -180,8 +193,12 @@ def heartbeat_loop() -> None:
     while True:
         try:
             _send_heartbeat()
+        except urllib.error.HTTPError as e:
+            log.error("Heartbeat: HTTP %d from backend — check API key", e.code)
+        except urllib.error.URLError as e:
+            log.warning("Heartbeat: backend unreachable (%s)", e.reason)
         except Exception as e:
-            log.debug("Heartbeat failed: %s", e)
+            log.warning("Heartbeat failed: %s", e)
         time.sleep(HEARTBEAT_INTERVAL)
 
 

@@ -1,3 +1,5 @@
+import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -7,6 +9,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.core.database import engine, Base
 from app.core.redis import close_redis
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+logging.basicConfig(
+    stream=sys.stdout,
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+# Quieten noisy libs
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+log = logging.getLogger(__name__)
 from app.api.routes import ingest, topology, incidents, knowledge, ws, tenants, heartbeat, notifications, install, runbooks, deploy_events, analyze, traces, assistant
 
 settings = get_settings()
@@ -14,6 +28,13 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    key = settings.ANTHROPIC_API_KEY or ""
+    if key.startswith("sk-ant-"):
+        log.info("Startup: Anthropic API key configured (%s…%s)", key[:18], key[-4:])
+    else:
+        log.warning("Startup: ANTHROPIC_API_KEY is not set or invalid — AI features will fail")
+
+    log.info("Startup: running DB migrations...")
     # Enable pgvector extension and create all tables on startup
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -29,6 +50,7 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("ALTER TABLE edges ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ DEFAULT NOW()"))
         await conn.execute(text("ALTER TABLE edges ADD COLUMN IF NOT EXISTS observation_count INTEGER DEFAULT 1"))
 
+    log.info("Startup: DB ready. Pyxis backend is up.")
     yield
 
     await close_redis()

@@ -11,11 +11,14 @@ Entry point: analyze_event()
 _run_rca() is also called directly from the ARQ task (tasks/rca.py).
 """
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import anthropic
 from arq import create_pool
+
+log = logging.getLogger(__name__)
 from arq.connections import RedisSettings
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,6 +73,8 @@ async def analyze_event(event: LogEvent, tenant_id: str, db: AsyncSession) -> No
         redis=r,
     )
 
+    log.debug("analyze_event: fp=%s fire=%s reason=%s", event.fingerprint[:16], fire, reason)
+
     if not fire:
         return
 
@@ -102,15 +107,18 @@ async def analyze_event(event: LogEvent, tenant_id: str, db: AsyncSession) -> No
     # Open new incident
     incident = await _open_incident(event, tenant_id, db)
     await register_open_incident(tenant_id, event.fingerprint, incident.id, r)
+    log.info("Opened incident %s: %s", incident.id, incident.title)
 
     # Storm detection: group related incidents under one parent
     is_storm_child = await check_and_group_storm(incident, tenant_id, r, db)
     if is_storm_child:
-        return  # Storm children skip RCA — the parent incident already has it
+        log.info("Incident %s is a storm child — skipping RCA", incident.id)
+        return
 
     # Enqueue RCA to ARQ worker (not BackgroundTasks — retried on failure)
     pool = await _get_arq_pool()
     await pool.enqueue_job("run_rca_task", incident.id, event.id, tenant_id)
+    log.info("Enqueued RCA job for incident %s", incident.id)
 
 
 # ── Incident management ───────────────────────────────────────────────────────
@@ -203,6 +211,8 @@ async def _run_rca(
         for p in past_incidents
     ) or "(no prior incidents)"
 
+    log.info("_run_rca: calling Claude for incident %s (model=%s)", incident.id, settings.CLAUDE_MODEL)
+
     # 6. Call Claude
     system_prompt = (
         "You are an expert SRE and DevOps engineer inside an infrastructure observability platform. "
@@ -247,14 +257,31 @@ Please provide:
 5. **Prevention** — what to change to prevent recurrence
 6. **Confidence** — your confidence level (0–100%) and what would increase it"""
 
-    message = await _anthropic.messages.create(
-        model=settings.CLAUDE_MODEL,
-        max_tokens=2048,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}],
-    )
+    try:
+        message = await _anthropic.messages.create(
+            model=settings.CLAUDE_MODEL,
+            max_tokens=2048,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        rca_text = message.content[0].text
+        log.info("_run_rca: Claude responded (%d chars) for incident %s", len(rca_text), incident.id)
+    except anthropic.AuthenticationError as e:
+        log.error("_run_rca: Anthropic auth error — check ANTHROPIC_API_KEY: %s", e)
+        incident.rca_full = "**RCA failed: Anthropic API key is invalid or missing.**\n\nFix: update `ANTHROPIC_API_KEY` in `backend/.env` and restart the backend."
+        incident.rca_summary = "RCA failed: invalid Anthropic API key"
+        await db.commit()
+        return
+    except anthropic.PermissionDeniedError as e:
+        log.error("_run_rca: Anthropic permission denied (check credit balance): %s", e)
+        incident.rca_full = "**RCA failed: Anthropic API credit balance is too low.**\n\nFix: top up at https://console.anthropic.com"
+        incident.rca_summary = "RCA failed: insufficient Anthropic credits"
+        await db.commit()
+        return
+    except Exception as e:
+        log.error("_run_rca: Claude API call failed for incident %s: %s", incident.id, e)
+        raise  # let ARQ retry
 
-    rca_text = message.content[0].text
     confidence = _extract_confidence(rca_text)
 
     # Find similar past incident
