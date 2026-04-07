@@ -57,6 +57,21 @@ HEARTBEAT_INTERVAL = int(os.environ.get("PYXIS_HEARTBEAT_INTERVAL", "60"))
 INGEST_URL = f"{API_URL}/api/v1/ingest/"
 HEARTBEAT_URL = f"{API_URL}/api/v1/heartbeat/"
 
+
+def _get_local_ip() -> str:
+    """Best-effort: get the primary outbound IP address of this host."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return ""
+
+
+NODE_IP = _get_local_ip()
+
 # Ensure disk buffer directory exists
 Path(BUFFER_DIR).mkdir(parents=True, exist_ok=True)
 
@@ -145,18 +160,26 @@ def _drain_disk_buffer() -> None:
 
 # ── Heartbeat ─────────────────────────────────────────────────────────────────
 
+def _send_heartbeat() -> None:
+    payload = json.dumps({
+        "node_name": NODE_NAME,
+        "node_kind": NODE_KIND,
+        "ip_address": NODE_IP or None,
+    }).encode()
+    req = urllib.request.Request(
+        HEARTBEAT_URL,
+        data=payload,
+        headers={"Content-Type": "application/json", "X-API-Key": API_KEY},
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=5)
+
+
 def heartbeat_loop() -> None:
     """Send a heartbeat every HEARTBEAT_INTERVAL seconds."""
     while True:
         try:
-            payload = json.dumps({"node_name": NODE_NAME, "node_kind": NODE_KIND}).encode()
-            req = urllib.request.Request(
-                HEARTBEAT_URL,
-                data=payload,
-                headers={"Content-Type": "application/json", "X-API-Key": API_KEY},
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=5)
+            _send_heartbeat()
         except Exception as e:
             log.debug("Heartbeat failed: %s", e)
         time.sleep(HEARTBEAT_INTERVAL)
@@ -341,7 +364,14 @@ def main() -> None:
         sys.exit(1)
 
     sources = [s.strip() for s in args.sources.split(",")]
-    log.info("Starting Pyxis shipper | node=%s | sources=%s", NODE_NAME, sources)
+    log.info("Starting Pyxis shipper | node=%s | ip=%s | sources=%s", NODE_NAME, NODE_IP or "unknown", sources)
+
+    # Register node immediately on startup
+    try:
+        _send_heartbeat()
+        log.info("Node registered with backend")
+    except Exception as e:
+        log.warning("Initial registration failed (will retry via heartbeat loop): %s", e)
 
     # Start flush + heartbeat threads
     threading.Thread(target=flush_loop, daemon=True).start()

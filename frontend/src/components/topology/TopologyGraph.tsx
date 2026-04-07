@@ -130,6 +130,11 @@ const InfraNode = memo(({ data }: NodeProps<NodeData>) => {
           {node.name}
         </p>
         <p className="text-[10px] text-slate-400 mt-0.5">{meta.label}</p>
+        {node.metadata?.ip_address && (
+          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
+            {node.metadata.ip_address}
+          </p>
+        )}
       </div>
       <Handle
         type="source"

@@ -1,7 +1,10 @@
 """
 Heartbeat endpoint — called by agents every 60 seconds.
-Updates node last_seen in Redis for silent-death detection.
+Creates the node on first contact, then updates last_seen in Redis.
 """
+import uuid
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -19,6 +22,7 @@ router = APIRouter()
 class HeartbeatPayload(BaseModel):
     node_name: str
     node_kind: str = "linux_host"
+    ip_address: str | None = None
 
 
 @router.post("/")
@@ -35,11 +39,36 @@ async def heartbeat(
     )
     node = result.scalar_one_or_none()
 
-    if node:
-        await record_heartbeat(tenant.id, node.id)
-        # Mark node healthy if it was previously down
+    if node is None:
+        # First contact — register the node automatically
+        meta = {}
+        if payload.ip_address:
+            meta["ip_address"] = payload.ip_address
+        node = Node(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant.id,
+            external_id=payload.node_name,
+            name=payload.node_name,
+            kind=payload.node_kind,
+            status="healthy",
+            labels={},
+            metadata_=meta,
+        )
+        db.add(node)
+        await db.commit()
+        await db.refresh(node)
+    else:
+        meta = dict(node.metadata_ or {})
+        changed = False
+        if payload.ip_address and meta.get("ip_address") != payload.ip_address:
+            meta["ip_address"] = payload.ip_address
+            node.metadata_ = meta
+            changed = True
         if node.status == "down":
             node.status = "healthy"
+            changed = True
+        if changed:
             await db.commit()
 
-    return {"ok": True}
+    await record_heartbeat(tenant.id, node.id)
+    return {"ok": True, "node_id": node.id}
