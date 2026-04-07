@@ -188,7 +188,13 @@ function buildFlowEdges(edges: Topology["edges"]): Edge[] {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export default function TopologyGraph({ topology }: { topology: Topology }) {
+export default function TopologyGraph({
+  topology,
+  onNodeSelect,
+}: {
+  topology: Topology;
+  onNodeSelect?: (node: TopologyNode | null) => void;
+}) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const recentEvents = useAppStore((s) => s.recentEvents);
@@ -226,6 +232,11 @@ export default function TopologyGraph({ topology }: { topology: Topology }) {
         nodeTypes={NODE_TYPES}
         fitView
         fitViewOptions={{ padding: 0.18 }}
+        onNodeClick={(_evt, rfNode) => {
+          const topoNode = topology.nodes.find((n) => n.id === rfNode.id);
+          onNodeSelect?.(topoNode ?? null);
+        }}
+        onPaneClick={() => onNodeSelect?.(null)}
       >
         <Background
           variant={BackgroundVariant.Dots}

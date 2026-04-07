@@ -4,15 +4,16 @@ Topology graph endpoints — consumed by the React Flow canvas.
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_tenant
 from app.models.tenant import Tenant
 from app.models.topology import Node, Edge
+from app.models.event import LogEvent
 
 router = APIRouter()
 
@@ -156,3 +157,58 @@ async def get_topology_stats(
         auto_discovered_nodes=auto_count,
         edge_kinds=edge_kinds,
     )
+
+
+class NodeLogEntry(BaseModel):
+    id: str
+    ts: datetime
+    source: str
+    level: str
+    message: str
+
+    class Config:
+        from_attributes = True
+
+
+class NodeLogsOut(BaseModel):
+    node_id: str
+    node_name: str
+    by_source: dict[str, list[NodeLogEntry]]
+
+
+@router.get("/nodes/{node_id}/logs", response_model=NodeLogsOut)
+async def get_node_logs(
+    node_id: str,
+    limit: int = Query(100, le=500),
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    # Verify node belongs to tenant
+    node_r = await db.execute(
+        select(Node).where(Node.id == node_id, Node.tenant_id == tenant.id)
+    )
+    node = node_r.scalar_one_or_none()
+    if node is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    logs_r = await db.execute(
+        select(LogEvent)
+        .where(LogEvent.node_id == node_id, LogEvent.tenant_id == tenant.id)
+        .order_by(desc(LogEvent.event_ts))
+        .limit(limit)
+    )
+    logs = logs_r.scalars().all()
+
+    by_source: dict[str, list[NodeLogEntry]] = {}
+    for ev in reversed(logs):  # chronological within each source
+        entry = NodeLogEntry(
+            id=ev.id,
+            ts=ev.event_ts,
+            source=ev.source,
+            level=ev.level,
+            message=ev.message or "",
+        )
+        by_source.setdefault(ev.source, []).append(entry)
+
+    return NodeLogsOut(node_id=node_id, node_name=node.name, by_source=by_source)

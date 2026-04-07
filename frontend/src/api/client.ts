@@ -85,6 +85,20 @@ export interface KnowledgeSource {
   error_message: string | null;
 }
 
+export interface NodeLogEntry {
+  id: string;
+  ts: string;
+  source: string;
+  level: string;
+  message: string;
+}
+
+export interface NodeLogsOut {
+  node_id: string;
+  node_name: string;
+  by_source: Record<string, NodeLogEntry[]>;
+}
+
 // ── API calls ─────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -92,6 +106,7 @@ export const api = {
     get: () => apiClient.get<Topology>("/api/v1/topology/").then((r) => r.data),
     discover: () => apiClient.post<{ edges_found: number; nodes_found: number; sources: string[]; last_run: string }>("/api/v1/topology/discover").then((r) => r.data),
     stats: () => apiClient.get<{ node_count: number; edge_count: number; auto_discovered_nodes: number; edge_kinds: Record<string, number> }>("/api/v1/topology/stats").then((r) => r.data),
+    nodeLogs: (nodeId: string) => apiClient.get<NodeLogsOut>(`/api/v1/topology/nodes/${nodeId}/logs`).then((r) => r.data),
   },
   incidents: {
     list: (params?: { status_filter?: string }) =>

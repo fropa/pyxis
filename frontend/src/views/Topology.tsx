@@ -2,9 +2,11 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Network, RefreshCw, CheckCircle2, GitBranch } from "lucide-react";
 import TopologyGraph from "../components/topology/TopologyGraph";
+import NodeLogsPanel from "../components/topology/NodeLogsPanel";
 import AlertFeed from "../components/alerts/AlertFeed";
 import IncidentPanel from "../components/incidents/IncidentPanel";
 import { api, getErrorMessage } from "../api/client";
+import type { TopologyNode } from "../api/client";
 import { QueryErrorState } from "../components/ui/QueryErrorState";
 
 const KIND_LABEL: Record<string, string> = {
@@ -26,6 +28,7 @@ const KIND_COLOR: Record<string, string> = {
 export default function TopologyView() {
   const qc = useQueryClient();
   const [discoverResult, setDiscoverResult] = useState<{ edges_found: number; sources: string[] } | null>(null);
+  const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null);
 
   const { data: topology, isLoading, isError, error } = useQuery({
     queryKey: ["topology"],
@@ -160,7 +163,7 @@ export default function TopologyView() {
           )}
 
           {!isError && topology && topology.nodes.length > 0 && (
-            <TopologyGraph topology={topology} />
+            <TopologyGraph topology={topology} onNodeSelect={setSelectedNode} />
           )}
         </div>
 
@@ -192,6 +195,9 @@ export default function TopologyView() {
       </div>
 
       <IncidentPanel />
+      {selectedNode && (
+        <NodeLogsPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
+      )}
     </div>
   );
 }
