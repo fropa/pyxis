@@ -107,6 +107,7 @@ export const api = {
     discover: () => apiClient.post<{ edges_found: number; nodes_found: number; sources: string[]; last_run: string }>("/api/v1/topology/discover").then((r) => r.data),
     stats: () => apiClient.get<{ node_count: number; edge_count: number; auto_discovered_nodes: number; edge_kinds: Record<string, number> }>("/api/v1/topology/stats").then((r) => r.data),
     nodeLogs: (nodeId: string) => apiClient.get<NodeLogsOut>(`/api/v1/topology/nodes/${nodeId}/logs`).then((r) => r.data),
+    deleteNode: (nodeId: string) => apiClient.delete(`/api/v1/topology/nodes/${nodeId}`).then((r) => r.data),
   },
   incidents: {
     list: (params?: { status_filter?: string }) =>

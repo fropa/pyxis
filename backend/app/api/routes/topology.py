@@ -4,7 +4,7 @@ Topology graph endpoints — consumed by the React Flow canvas.
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -212,3 +212,23 @@ async def get_node_logs(
         by_source.setdefault(ev.source, []).append(entry)
 
     return NodeLogsOut(node_id=node_id, node_name=node.name, by_source=by_source)
+
+
+@router.delete("/nodes/{node_id}")
+async def delete_node(
+    node_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Soft-delete a node (hide from topology, mark as deleted)."""
+    node_r = await db.execute(
+        select(Node).where(Node.id == node_id, Node.tenant_id == tenant.id)
+    )
+    node = node_r.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    node.deleted_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return {"ok": True, "node_id": node_id, "node_name": node.name}

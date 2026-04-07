@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { X, Loader2, Terminal, ChevronDown, ChevronRight } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { X, Loader2, Terminal, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { api, getErrorMessage } from "../../api/client";
 import type { TopologyNode } from "../../api/client";
 import clsx from "clsx";
@@ -34,6 +34,17 @@ interface Props {
 
 export default function NodeLogsPanel({ node, onClose }: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const qc = useQueryClient();
+
+  const deleteMutation = useMutation({
+    mutationFn: () => api.topology.deleteNode(node.id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["topology"] });
+      qc.invalidateQueries({ queryKey: ["topology-stats"] });
+      onClose();
+    },
+  });
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["node-logs", node.id],
@@ -57,12 +68,40 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
             )}
           </p>
         </div>
-        <button
-          onClick={onClose}
-          className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/5 transition-colors"
-        >
-          <X size={15} />
-        </button>
+        <div className="flex items-center gap-1">
+          {confirmDelete ? (
+            <>
+              <span className="text-[11px] text-red-400 mr-1">Remove node?</span>
+              <button
+                onClick={() => deleteMutation.mutate()}
+                disabled={deleteMutation.isPending}
+                className="px-2 py-1 text-[11px] font-semibold rounded bg-red-600 text-white hover:bg-red-500 disabled:opacity-50 transition-colors"
+              >
+                {deleteMutation.isPending ? "…" : "Yes"}
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="px-2 py-1 text-[11px] rounded text-slate-400 hover:text-white hover:bg-white/5 transition-colors"
+              >
+                No
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="p-1.5 rounded-lg text-slate-600 hover:text-red-400 hover:bg-white/5 transition-colors"
+              title="Remove from topology"
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg text-slate-500 hover:text-white hover:bg-white/5 transition-colors"
+          >
+            <X size={15} />
+          </button>
+        </div>
       </div>
 
       {/* Body */}
