@@ -1,7 +1,9 @@
 import axios from "axios";
 import { useAppStore } from "../store";
 
-const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Relative URL ("") → requests go to same host → nginx proxies /api/ to backend
+// Set VITE_API_URL=http://host:8000 only for local dev without nginx
+const BASE_URL = import.meta.env.VITE_API_URL ?? "";
 
 export const apiClient = axios.create({ baseURL: BASE_URL });
 
