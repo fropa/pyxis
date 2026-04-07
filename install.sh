@@ -110,48 +110,6 @@ if [ ! -f backend/.env ]; then
     cp backend/.env.example backend/.env
 fi
 
-# Check if ANTHROPIC_API_KEY is already a real key (starts with sk-ant-)
-CURRENT_KEY=$(grep "^ANTHROPIC_API_KEY=" backend/.env | cut -d'=' -f2-)
-OFFLINE_MODE=false
-
-if [[ "$CURRENT_KEY" == sk-ant-* ]]; then
-    MASKED="${CURRENT_KEY:0:18}…${CURRENT_KEY: -4}"
-    info "Anthropic API key already configured: ${MASKED}"
-    printf "  Press Enter to keep it, or paste a new key: " >&2
-    read -r NEW_KEY </dev/tty
-    if [ -n "$NEW_KEY" ]; then
-        sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$NEW_KEY|" backend/.env
-        info "API key updated."
-    fi
-else
-    echo ""
-    echo -e "${BOLD}╔══════════════════════════════════════════════╗${RESET}"
-    echo -e "${BOLD}║         Anthropic API Key Setup              ║${RESET}"
-    echo -e "${BOLD}╚══════════════════════════════════════════════╝${RESET}"
-    echo ""
-    echo "  Pyxis uses Claude AI for root cause analysis, runbooks,"
-    echo "  post-mortems, and the on-call assistant."
-    echo ""
-    echo "  Get a free key at: https://console.anthropic.com"
-    echo ""
-    echo -e "  ${YELLOW}[O]ffline${RESET} — install without AI features (add the key later)"
-    echo -e "  ${GREEN}[key]${RESET}    — paste your Anthropic API key now"
-    echo ""
-    printf "  Your choice: " >&2
-    read -r INPUT </dev/tty
-
-    if [[ "${INPUT,,}" == "o" || "${INPUT,,}" == "offline" || -z "$INPUT" ]]; then
-        OFFLINE_MODE=true
-        warn "Offline mode — AI features disabled. Add ANTHROPIC_API_KEY to backend/.env later to enable them."
-    elif [[ "$INPUT" == sk-ant-* ]]; then
-        sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$INPUT|" backend/.env
-        info "API key saved."
-    else
-        warn "Key doesn't look right (expected sk-ant-...). Saved anyway — check backend/.env if AI doesn't work."
-        sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$INPUT|" backend/.env
-    fi
-fi
-
 # ── 6. Start the stack ─────────────────────────────────────────────────────────
 info "Starting Pyxis (this may take a few minutes on first run)..."
 docker compose up -d --build
@@ -170,7 +128,66 @@ if ! curl -sf http://localhost:8000/health > /dev/null 2>&1; then
     exit 1
 fi
 
-# ── 8. Create default tenant ───────────────────────────────────────────────────
+# ── 8. Configure Anthropic API key ────────────────────────────────────────────
+_configure_api_key() {
+    echo ""
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    echo -e "${BOLD}  Anthropic API Key${RESET}"
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+    CURRENT_KEY=$(grep "^ANTHROPIC_API_KEY=" backend/.env | cut -d'=' -f2-)
+    NEED_RESTART=false
+
+    if [[ "$CURRENT_KEY" == sk-ant-* ]]; then
+        MASKED="${CURRENT_KEY:0:18}…${CURRENT_KEY: -4}"
+        echo ""
+        echo -e "  Current key: ${YELLOW}${MASKED}${RESET}"
+        echo ""
+        printf "  Replace it? [y/N]: " >&2
+        read -r ANSWER </dev/tty
+        if [[ "${ANSWER,,}" == "y" || "${ANSWER,,}" == "yes" ]]; then
+            printf "  Paste new Anthropic API key: " >&2
+            read -r NEW_KEY </dev/tty
+            if [[ -n "$NEW_KEY" ]]; then
+                sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$NEW_KEY|" backend/.env
+                info "API key updated."
+                NEED_RESTART=true
+            else
+                warn "No key entered — keeping existing key."
+            fi
+        else
+            info "Keeping existing key."
+        fi
+    else
+        echo ""
+        echo "  Pyxis uses Claude AI for root cause analysis, runbooks,"
+        echo "  post-mortems, and the on-call assistant."
+        echo ""
+        echo "  Get a free key at: https://console.anthropic.com"
+        echo ""
+        echo -e "  Type ${YELLOW}offline${RESET} to skip AI features for now."
+        echo ""
+        printf "  Paste your Anthropic API key: " >&2
+        read -r INPUT </dev/tty
+        echo ""
+        if [[ "${INPUT,,}" == "offline" || -z "$INPUT" ]]; then
+            warn "Offline mode — AI features disabled."
+            warn "To enable later: edit backend/.env, set ANTHROPIC_API_KEY, then run: docker compose restart backend worker"
+        else
+            sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$INPUT|" backend/.env
+            info "API key saved."
+            NEED_RESTART=true
+        fi
+    fi
+    echo ""
+
+    if [[ "$NEED_RESTART" == "true" ]]; then
+        info "Restarting backend to apply new key..."
+        docker compose restart backend worker
+    fi
+}
+_configure_api_key
+
+# ── 10. Create default tenant ─────────────────────────────────────────────────
 RESPONSE=$(curl -sf -X POST http://localhost:8000/api/v1/tenants/ \
     -H "Content-Type: application/json" \
     -d '{"name":"default","contact_email":"admin@localhost"}' 2>/dev/null || echo "")
