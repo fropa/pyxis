@@ -382,8 +382,8 @@ function buildCommands(opts: {
       return [
         {
           label: "Run the installer (requires sudo)",
-          command: `curl -fsSL "${base}/linux?api_key=${key}&api_url=${url}&sources=${linuxSources}" | sudo bash`,
-          note: "Downloads shipper.py, creates a systemd service and starts it.",
+          command: `curl -fsSL "${base}/linux?api_key=${key}&api_url=${url}&sources=${linuxSources}" | bash`,
+          note: "Run as root or with sudo. Downloads shipper.py, creates a systemd service and starts it.",
         },
       ];
 

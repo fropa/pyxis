@@ -17,7 +17,9 @@ from fastapi.responses import PlainTextResponse, Response
 
 router = APIRouter()
 
-_AGENT_DIR = Path(__file__).parent.parent.parent.parent.parent / "agent"
+# In Docker the agent dir is mounted at /agent (see docker-compose volumes)
+# Fallback to relative path for local dev outside Docker
+_AGENT_DIR = Path("/agent") if Path("/agent").exists() else Path(__file__).parents[4] / "agent"
 
 
 def _read_agent_file(name: str) -> str:

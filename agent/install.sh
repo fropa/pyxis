@@ -18,7 +18,14 @@ error()   { echo -e "${RED}[pyxis]${NC} $*" >&2; exit 1; }
 
 # ── Checks ─────────────────────────────────────────────────────────────────
 
-[[ $EUID -eq 0 ]] || error "Run as root (prefix with sudo)"
+if [[ $EUID -ne 0 ]]; then
+    # Re-run with sudo if available, otherwise error
+    if command -v sudo &>/dev/null; then
+        exec sudo bash "$0" "$@"
+    else
+        error "Run as root: su -c 'bash <(curl ...)'"
+    fi
+fi
 [[ "$PYXIS_API_KEY" == "__API_KEY__" ]] && error "PYXIS_API_KEY not set"
 [[ "$PYXIS_API_URL" == "__API_URL__" ]] && error "PYXIS_API_URL not set"
 
