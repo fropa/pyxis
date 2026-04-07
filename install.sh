@@ -156,19 +156,14 @@ info "Configuring nginx..."
 
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-sudo tee /etc/nginx/sites-available/pyxis > /dev/null <<NGINX
+NGINX_CONF=/etc/nginx/sites-available/pyxis
+
+sudo tee "$NGINX_CONF" > /dev/null <<NGINX
 server {
-    listen 80;
-    server_name ${SERVER_IP} _;
+    listen 80 default_server;
+    server_name _;
 
-    location / {
-        proxy_pass         http://127.0.0.1:5173;
-        proxy_http_version 1.1;
-        proxy_set_header   Upgrade    \$http_upgrade;
-        proxy_set_header   Connection "upgrade";
-        proxy_set_header   Host       \$host;
-    }
-
+    # Backend routes → FastAPI :8000
     location /api/ {
         proxy_pass         http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -187,25 +182,56 @@ server {
         proxy_read_timeout 3600s;
     }
 
+    location /docs {
+        proxy_pass       http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+    }
+
+    location /openapi.json {
+        proxy_pass       http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+    }
+
+    location /redoc {
+        proxy_pass       http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+    }
+
     location /install {
         proxy_pass       http://127.0.0.1:8000;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
     }
 
-    location /docs {
+    location /health {
         proxy_pass       http://127.0.0.1:8000;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
     }
+
+    # Everything else → Vite frontend :5173
+    location / {
+        proxy_pass         http://127.0.0.1:5173;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade    \$http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host       \$host;
+    }
 }
 NGINX
 
-# Enable site (debian/ubuntu style — skip if sites-enabled doesn't exist)
+# Enable site — handle both sites-enabled (Debian/Ubuntu) and conf.d (RHEL/Fedora/Arch)
 if [ -d /etc/nginx/sites-enabled ]; then
-    sudo ln -sf /etc/nginx/sites-available/pyxis /etc/nginx/sites-enabled/pyxis
-    # Remove default site if it's still there and would conflict on port 80
+    sudo ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/pyxis
+    # Disable the default site so it doesn't conflict on port 80
     sudo rm -f /etc/nginx/sites-enabled/default
+elif [ -d /etc/nginx/conf.d ]; then
+    sudo ln -sf "$NGINX_CONF" /etc/nginx/conf.d/pyxis.conf
+    # Remove the default welcome page config
+    sudo rm -f /etc/nginx/conf.d/default.conf
 fi
 
 if sudo nginx -t 2>/dev/null; then
