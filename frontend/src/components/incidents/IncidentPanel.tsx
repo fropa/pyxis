@@ -12,12 +12,29 @@ import { QueryErrorState } from "../ui/QueryErrorState";
 import { SkeletonText } from "../ui/Skeleton";
 import clsx from "clsx";
 
+function copyToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text);
+  }
+  return new Promise((resolve) => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.cssText = "position:fixed;left:-9999px;top:-9999px";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    resolve();
+  });
+}
+
 function CopyButton({ text, alwaysVisible = false }: { text: string; alwaysVisible?: boolean }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       onClick={() => {
-        navigator.clipboard.writeText(text).then(() => {
+        copyToClipboard(text).then(() => {
           setCopied(true);
           setTimeout(() => setCopied(false), 2000);
         });
