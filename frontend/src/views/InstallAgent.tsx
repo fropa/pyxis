@@ -3,7 +3,15 @@ import { Check, Copy, Server, Box, Cloud, Terminal, Download } from "lucide-reac
 import { useAppStore } from "../store";
 import clsx from "clsx";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Derive API URL from the current page — works for any host, IP, or domain
+// Users behind nginx on port 80 get "http://x.x.x.x", dev gets "http://localhost:5173"
+function getDefaultApiUrl(): string {
+  const { protocol, hostname, port } = window.location;
+  // If running on the Vite dev port directly, point to the backend port
+  if (port === "5173") return `${protocol}//${hostname}:8000`;
+  // Otherwise (nginx / production) use the same origin
+  return `${protocol}//${hostname}${port ? `:${port}` : ""}`;
+}
 
 type PlatformId = "linux" | "kubernetes" | "docker" | "macos";
 
@@ -160,9 +168,9 @@ export default function InstallAgent() {
   const [k8sNamespace, setK8sNamespace] = useState("monitoring");
   const [k8sSources, setK8sSources] = useState("k8s,syslog");
   const [linuxSources, setLinuxSources] = useState("syslog");
+  const [customApiUrl, setCustomApiUrl] = useState("");
 
-  const baseUrl = window.location.origin.replace("5173", "8000");
-  const effectiveApiUrl = API_URL.startsWith("http") ? API_URL : baseUrl;
+  const effectiveApiUrl = customApiUrl.trim() || getDefaultApiUrl();
 
   const commands = buildCommands({
     apiKey,
@@ -202,6 +210,22 @@ export default function InstallAgent() {
             </p>
           </div>
         )}
+
+        {/* API URL — auto-detected, override for multi-IP setups */}
+        <div className="bg-surface border border-border rounded-xl p-4 space-y-1.5">
+          <label className="block text-[12px] font-semibold text-text-2">
+            Pyxis API URL
+            <span className="ml-2 text-[11px] font-normal text-text-4">
+              (auto-detected — override if agents reach this server on a different IP)
+            </span>
+          </label>
+          <input
+            value={customApiUrl}
+            onChange={(e) => setCustomApiUrl(e.target.value)}
+            placeholder={getDefaultApiUrl()}
+            className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] text-text-1 placeholder:text-text-4 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 font-mono"
+          />
+        </div>
 
         {/* Platform picker */}
         <div className="grid grid-cols-2 gap-3">
