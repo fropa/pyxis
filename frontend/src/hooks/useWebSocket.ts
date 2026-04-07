@@ -1,7 +1,12 @@
 import { useEffect, useRef } from "react";
 import { useAppStore, WsEvent } from "../store";
 
-const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8000";
+// Derive WS URL from current page location so it works on any host/port.
+// Falls back to explicit VITE_WS_URL when running the Vite dev server directly.
+const WS_URL = import.meta.env.VITE_WS_URL ||
+  (typeof window !== "undefined"
+    ? `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}`
+    : "ws://localhost:8000");
 
 export function useWebSocket() {
   const apiKey = useAppStore((s) => s.apiKey);
