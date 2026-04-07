@@ -56,6 +56,19 @@ async def list_tenants(db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 
+@router.get("/setup/key")
+async def setup_key(db: AsyncSession = Depends(get_db)):
+    """Return the first tenant's API key — no auth required.
+    Used by the frontend on first load to auto-configure itself."""
+    result = await db.execute(
+        select(Tenant).where(Tenant.is_active == True).limit(1)
+    )
+    tenant = result.scalar_one_or_none()
+    if not tenant:
+        return {"api_key": None}
+    return {"api_key": tenant.api_key}
+
+
 class TenantStats(BaseModel):
     id: str
     name: str
