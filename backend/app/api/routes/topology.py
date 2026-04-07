@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -174,12 +174,15 @@ class NodeLogsOut(BaseModel):
     node_id: str
     node_name: str
     by_source: dict[str, list[NodeLogEntry]]
+    has_older: bool
 
 
 @router.get("/nodes/{node_id}/logs", response_model=NodeLogsOut)
 async def get_node_logs(
     node_id: str,
-    limit: int = Query(100, le=500),
+    limit: int = Query(100, le=1000),
+    before: datetime | None = Query(None, description="Fetch logs older than this ISO timestamp"),
+    source: str | None = Query(None, description="Filter by source (e.g. syslog)"),
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
@@ -189,16 +192,28 @@ async def get_node_logs(
     )
     node = node_r.scalar_one_or_none()
     if node is None:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Node not found")
 
-    logs_r = await db.execute(
-        select(LogEvent)
-        .where(LogEvent.node_id == node_id, LogEvent.tenant_id == tenant.id)
-        .order_by(desc(LogEvent.event_ts))
-        .limit(limit)
+    # Match by node_id OR by node_name (fallback for logs where node_id FK is NULL)
+    node_filter = or_(
+        LogEvent.node_id == node_id,
+        LogEvent.node_name == node.external_id,
     )
-    logs = logs_r.scalars().all()
+
+    q = (
+        select(LogEvent)
+        .where(LogEvent.tenant_id == tenant.id, node_filter)
+    )
+    if before:
+        q = q.where(LogEvent.event_ts < before)
+    if source:
+        q = q.where(LogEvent.source == source)
+
+    # Fetch limit+1 to detect if older logs exist
+    logs_r = await db.execute(q.order_by(desc(LogEvent.event_ts)).limit(limit + 1))
+    all_logs = logs_r.scalars().all()
+    has_older = len(all_logs) > limit
+    logs = all_logs[:limit]
 
     by_source: dict[str, list[NodeLogEntry]] = {}
     for ev in reversed(logs):  # chronological within each source
@@ -211,7 +226,7 @@ async def get_node_logs(
         )
         by_source.setdefault(ev.source, []).append(entry)
 
-    return NodeLogsOut(node_id=node_id, node_name=node.name, by_source=by_source)
+    return NodeLogsOut(node_id=node_id, node_name=node.name, by_source=by_source, has_older=has_older)
 
 
 @router.delete("/nodes/{node_id}")

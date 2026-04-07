@@ -185,8 +185,24 @@ export default function InstallAgent() {
   const [selected, setSelected] = useState<PlatformId>("kubernetes");
   const [k8sNamespace, setK8sNamespace] = useState("monitoring");
   const [k8sSources, setK8sSources] = useState("k8s,syslog");
-  const [linuxSources, setLinuxSources] = useState("syslog");
+  const [linuxSourcesSelected, setLinuxSourcesSelected] = useState<Set<string>>(new Set(["syslog"]));
+  const [linuxCustomSource, setLinuxCustomSource] = useState("");
   const [customApiUrl, setCustomApiUrl] = useState("");
+
+  // Derive the final sources string for the install command
+  const linuxSources = [
+    ...Array.from(linuxSourcesSelected),
+    ...(linuxCustomSource.trim() ? [linuxCustomSource.trim()] : []),
+  ].join(",") || "syslog";
+
+  function toggleLinuxSource(source: string) {
+    setLinuxSourcesSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(source)) next.delete(source);
+      else next.add(source);
+      return next;
+    });
+  }
 
   const effectiveApiUrl = customApiUrl.trim() || getDefaultApiUrl();
 
@@ -283,15 +299,65 @@ export default function InstallAgent() {
           </div>
         )}
         {selected === "linux" && (
-          <div className="max-w-xs">
-            <label className="block text-[12px] font-semibold text-text-2 mb-1.5">
+          <div className="bg-surface border border-border rounded-xl p-4 space-y-3">
+            <label className="block text-[12px] font-semibold text-text-2">
               Sources
+              <span className="ml-2 text-[11px] font-normal text-text-4">
+                choose what to collect
+              </span>
             </label>
-            <input
-              value={linuxSources}
-              onChange={(e) => setLinuxSources(e.target.value)}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-[13px] text-text-1 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10"
-            />
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { id: "syslog", label: "Syslog / journald", desc: "System & auth logs" },
+                { id: "k8s", label: "Kubernetes", desc: "K8s events & pod logs" },
+                { id: "pipeline", label: "CI / Pipeline", desc: "Build & deploy events" },
+              ].map(({ id, label, desc }) => {
+                const checked = linuxSourcesSelected.has(id);
+                return (
+                  <button
+                    key={id}
+                    onClick={() => toggleLinuxSource(id)}
+                    className={clsx(
+                      "text-left p-3 rounded-lg border-2 transition-all",
+                      checked
+                        ? "border-accent bg-accent-muted"
+                        : "border-border bg-bg hover:border-border-strong"
+                    )}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span
+                        className={clsx(
+                          "w-3.5 h-3.5 rounded flex items-center justify-center border flex-shrink-0",
+                          checked ? "bg-accent border-accent" : "border-border-strong bg-surface"
+                        )}
+                      >
+                        {checked && <Check size={9} className="text-white" strokeWidth={3} />}
+                      </span>
+                      <span className={clsx("text-[12px] font-semibold", checked ? "text-accent-text" : "text-text-1")}>
+                        {label}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-text-4 pl-5">{desc}</p>
+                  </button>
+                );
+              })}
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-text-3 mb-1.5">
+                Custom source (optional)
+              </label>
+              <input
+                value={linuxCustomSource}
+                onChange={(e) => setLinuxCustomSource(e.target.value)}
+                placeholder="e.g. app_log"
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[12px] text-text-1 placeholder:text-text-4 focus:outline-none focus:border-accent/50 focus:ring-2 focus:ring-accent/10 font-mono"
+              />
+            </div>
+            {linuxSources && (
+              <p className="text-[11px] text-text-4 font-mono">
+                → <span className="text-text-2">{linuxSources}</span>
+              </p>
+            )}
           </div>
         )}
 

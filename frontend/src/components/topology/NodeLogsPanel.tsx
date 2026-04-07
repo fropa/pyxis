@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   X, Loader2, Terminal, ChevronDown, ChevronRight, Trash2,
   ScrollText, TerminalSquare, CheckCircle2, XCircle, Clock,
-  Copy, Check, Eraser, Zap,
+  Copy, Check, Eraser, Zap, ChevronUp, Filter, RefreshCw,
 } from "lucide-react";
 import { api, getErrorMessage } from "../../api/client";
-import type { TopologyNode } from "../../api/client";
+import type { TopologyNode, NodeLogEntry } from "../../api/client";
 import clsx from "clsx";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -15,6 +15,11 @@ const LEVEL_COLOR: Record<string, string> = {
   critical: "text-red-400", error: "text-red-400",
   warning: "text-yellow-400", warn: "text-yellow-400",
   info: "text-slate-300", debug: "text-slate-500",
+};
+const LEVEL_BG: Record<string, string> = {
+  critical: "bg-red-500/20 border-l-2 border-red-500/60",
+  error: "bg-red-500/10 border-l-2 border-red-500/40",
+  warning: "bg-yellow-500/10 border-l-2 border-yellow-500/40",
 };
 const SOURCE_ICON: Record<string, string> = {
   syslog: "SYS", k8s_event: "K8S", ci_pipeline: "CI", app_log: "APP", audit_log: "AUD",
@@ -30,8 +35,13 @@ const QUICK_CMDS = [
   { label: "who",      cmd: "who; last | head -5" },
 ];
 
-function fmtTime(ts: string) {
+function fmtTs(ts: string) {
   return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+function fmtDate(ts: string) {
+  const d = new Date(ts);
+  return d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " +
+    d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 function fmtDuration(ms: number) {
   if (ms < 1000) return `${ms}ms`;
@@ -56,7 +66,7 @@ function CopyBtn({ text }: { text: string }) {
   return (
     <button
       onClick={() => {
-        navigator.clipboard?.writeText(text).catch(() => {
+        (navigator.clipboard?.writeText(text) ?? Promise.resolve()).catch(() => {
           const ta = document.createElement("textarea");
           ta.value = text;
           document.body.appendChild(ta); ta.select();
@@ -66,7 +76,7 @@ function CopyBtn({ text }: { text: string }) {
         setTimeout(() => setCopied(false), 1500);
       }}
       className="p-1 rounded text-slate-600 hover:text-slate-300 transition-colors"
-      title="Copy output"
+      title="Copy"
     >
       {copied ? <Check size={11} className="text-green-400" /> : <Copy size={11} />}
     </button>
@@ -86,11 +96,78 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [cmd, setCmd] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [navIdx, setNavIdx] = useState(-1); // history navigation index
+  const [navIdx, setNavIdx] = useState(-1);
+  const [sourceFilter, setSourceFilter] = useState<string | null>(null);
+
+  // Accumulated log entries (merged across pagination pages)
+  const [allLogs, setAllLogs] = useState<NodeLogEntry[]>([]);
+  const [hasOlder, setHasOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [loadingLogs, setLoadingLogs] = useState(true);
+  const [logsError, setLogsError] = useState<string | null>(null);
+  const [lastRefresh, setLastRefresh] = useState(Date.now());
+
   const inputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const nextId = useRef(0);
   const qc = useQueryClient();
+
+  // ── Fetch latest logs ─────────────────────────────────────────────────────
+
+  const fetchLogs = useCallback(async (replace = true) => {
+    try {
+      setLoadingLogs(replace);
+      const data = await api.topology.nodeLogs(node.id, {
+        limit: 100,
+        source: sourceFilter ?? undefined,
+      });
+      if (replace) {
+        setAllLogs(flattenLogs(data.by_source));
+      } else {
+        setAllLogs((prev) => dedupe([...flattenLogs(data.by_source), ...prev]));
+      }
+      setHasOlder(data.has_older);
+      setLogsError(null);
+    } catch (err) {
+      setLogsError(getErrorMessage(err));
+    } finally {
+      setLoadingLogs(false);
+    }
+  }, [node.id, sourceFilter]);
+
+  useEffect(() => {
+    fetchLogs(true);
+  }, [fetchLogs, lastRefresh]);
+
+  // Auto-refresh every 10s
+  useEffect(() => {
+    const t = setInterval(() => setLastRefresh(Date.now()), 10_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // ── Load older logs ────────────────────────────────────────────────────────
+
+  const loadOlder = useCallback(async () => {
+    const oldest = allLogs[0];
+    if (!oldest || loadingOlder) return;
+    try {
+      setLoadingOlder(true);
+      const data = await api.topology.nodeLogs(node.id, {
+        limit: 100,
+        before: oldest.ts,
+        source: sourceFilter ?? undefined,
+      });
+      const older = flattenLogs(data.by_source);
+      setAllLogs((prev) => dedupe([...older, ...prev]));
+      setHasOlder(data.has_older);
+    } catch (err) {
+      // ignore — user can retry
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [node.id, allLogs, loadingOlder, sourceFilter]);
+
+  // ── Mutations ──────────────────────────────────────────────────────────────
 
   const deleteMutation = useMutation({
     mutationFn: () => api.topology.deleteNode(node.id),
@@ -105,45 +182,46 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
     mutationFn: (command: string) => api.exec.run(node.id, command),
     onSuccess: (data, command) => {
       setHistory((h) => [...h, {
-        id: nextId.current++,
-        cmd: command,
-        output: data.output,
-        exit_code: data.exit_code,
-        duration_ms: data.duration_ms,
-        ts: new Date(),
+        id: nextId.current++, cmd: command,
+        output: data.output, exit_code: data.exit_code,
+        duration_ms: data.duration_ms, ts: new Date(),
       }]);
       setCmd(""); setNavIdx(-1);
     },
     onError: (err, command) => {
       setHistory((h) => [...h, {
-        id: nextId.current++,
-        cmd: command,
-        output: getErrorMessage(err),
-        exit_code: -1,
-        duration_ms: 0,
-        ts: new Date(),
+        id: nextId.current++, cmd: command,
+        output: getErrorMessage(err), exit_code: -1,
+        duration_ms: 0, ts: new Date(),
       }]);
       setCmd(""); setNavIdx(-1);
     },
   });
 
-  const { data: logsData, isLoading: logsLoading, isError: logsError, error: logsErr } = useQuery({
-    queryKey: ["node-logs", node.id],
-    queryFn: () => api.topology.nodeLogs(node.id),
-    refetchInterval: 10_000,
-  });
+  // ── Derived log state ──────────────────────────────────────────────────────
 
-  const sources = logsData ? Object.keys(logsData.by_source).sort() : [];
+  const availableSources = Array.from(new Set(allLogs.map((l) => l.source))).sort();
+  const filteredLogs = sourceFilter
+    ? allLogs.filter((l) => l.source === sourceFilter)
+    : allLogs;
 
-  // Auto-scroll console
+  // Group by source for display
+  const bySource: Record<string, NodeLogEntry[]> = {};
+  for (const entry of filteredLogs) {
+    (bySource[entry.source] ??= []).push(entry);
+  }
+
+  // ── Effects ────────────────────────────────────────────────────────────────
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [history, execMutation.isPending]);
 
-  // Focus input on console tab
   useEffect(() => {
     if (tab === "console") setTimeout(() => inputRef.current?.focus(), 60);
   }, [tab]);
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
   const runCmd = useCallback((command: string) => {
     const c = command.trim();
@@ -171,14 +249,13 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
   }
 
   const ip = node.metadata?.ip_address as string | undefined;
-  const promptHost = ip ? `${node.name}` : node.name;
+  const promptHost = node.name;
 
   return (
-    <div className="fixed inset-y-0 right-0 w-[600px] bg-[#0d0d18] border-l border-[#252540] flex flex-col z-50 shadow-2xl animate-slide-in">
+    <div className="fixed inset-y-0 right-0 w-[640px] bg-[#0d0d18] border-l border-[#252540] flex flex-col z-50 shadow-2xl animate-slide-in">
 
       {/* ── Header ── */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-[#252540] flex-shrink-0 bg-[#111124]">
-        {/* Traffic lights */}
         <div className="flex items-center gap-1.5">
           <button onClick={onClose} className="w-3 h-3 rounded-full bg-[#ff5f57] hover:brightness-110 transition-all" title="Close" />
           <div className="w-3 h-3 rounded-full bg-[#febc2e]" />
@@ -190,10 +267,15 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
             <span className="text-[13px] font-semibold text-slate-200 truncate">{node.name}</span>
             {ip && <span className="text-[11px] font-mono text-slate-500">{ip}</span>}
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#252540] text-slate-500 font-mono">{node.kind}</span>
+            <span className={clsx(
+              "text-[10px] px-1.5 py-0.5 rounded font-medium",
+              node.status === "healthy" ? "bg-emerald-500/15 text-emerald-400" :
+              node.status === "down" ? "bg-red-500/15 text-red-400" :
+              "bg-yellow-500/15 text-yellow-400"
+            )}>{node.status}</span>
           </div>
         </div>
 
-        {/* Delete */}
         {confirmDelete ? (
           <div className="flex items-center gap-1.5 animate-fade-in">
             <span className="text-[11px] text-red-400">Remove?</span>
@@ -224,6 +306,11 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
             )}>
             {t === "logs" ? <ScrollText size={12} /> : <TerminalSquare size={12} />}
             {t === "logs" ? "Logs" : "Console"}
+            {t === "logs" && filteredLogs.length > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 text-[9px] rounded-full bg-[#252540] text-slate-500 tabular-nums">
+                {filteredLogs.length}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -231,41 +318,116 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
       {/* ── Logs tab ── */}
       {tab === "logs" && (
         <>
+          {/* Filters + refresh */}
+          <div className="flex-shrink-0 flex items-center gap-2 px-4 py-2 border-b border-[#1e1e35] bg-[#0f0f1e] overflow-x-auto scrollbar-none">
+            <Filter size={10} className="text-slate-700 flex-shrink-0" />
+            <button
+              onClick={() => setSourceFilter(null)}
+              className={clsx(
+                "flex-shrink-0 px-2 py-0.5 text-[10px] font-mono rounded transition-all",
+                sourceFilter === null
+                  ? "bg-[#7c8cf8]/20 text-[#a5b4fc] border border-[#7c8cf8]/30"
+                  : "text-slate-600 hover:text-slate-400 border border-transparent"
+              )}
+            >All</button>
+            {availableSources.map((src) => (
+              <button
+                key={src}
+                onClick={() => setSourceFilter(src === sourceFilter ? null : src)}
+                className={clsx(
+                  "flex-shrink-0 px-2 py-0.5 text-[10px] font-mono rounded transition-all",
+                  sourceFilter === src
+                    ? "bg-[#7c8cf8]/20 text-[#a5b4fc] border border-[#7c8cf8]/30"
+                    : "text-slate-600 hover:text-slate-400 border border-transparent"
+                )}
+              >
+                {SOURCE_ICON[src] ?? src}
+              </button>
+            ))}
+            <button
+              onClick={() => setLastRefresh(Date.now())}
+              className="ml-auto flex-shrink-0 p-1 rounded text-slate-700 hover:text-slate-400 transition-colors"
+              title="Refresh"
+            >
+              <RefreshCw size={11} className={loadingLogs ? "animate-spin" : ""} />
+            </button>
+          </div>
+
           <div className="flex-1 overflow-y-auto">
-            {logsLoading && (
+
+            {/* Load older button */}
+            {hasOlder && (
+              <div className="flex justify-center py-3 border-b border-[#1a1a2e]">
+                <button
+                  onClick={loadOlder}
+                  disabled={loadingOlder}
+                  className="flex items-center gap-2 px-4 py-1.5 text-[11px] rounded-full border border-[#2d2d50] text-slate-400 hover:border-[#7c8cf8]/50 hover:text-[#a5b4fc] transition-all disabled:opacity-40"
+                >
+                  {loadingOlder
+                    ? <Loader2 size={11} className="animate-spin" />
+                    : <ChevronUp size={11} />}
+                  Load older logs
+                </button>
+              </div>
+            )}
+
+            {loadingLogs && (
               <div className="flex items-center gap-2 p-5 text-slate-500 text-[12px]">
                 <Loader2 size={13} className="animate-spin" /> Loading logs…
               </div>
             )}
-            {logsError && <p className="p-5 text-[12px] text-red-400">{getErrorMessage(logsErr)}</p>}
-            {logsData && sources.length === 0 && (
-              <div className="p-6 text-center">
-                <Terminal size={28} className="text-slate-700 mx-auto mb-2" />
-                <p className="text-[13px] text-slate-500">No logs received yet.</p>
+            {logsError && (
+              <p className="p-5 text-[12px] text-red-400">{logsError}</p>
+            )}
+            {!loadingLogs && !logsError && filteredLogs.length === 0 && (
+              <div className="p-8 text-center flex flex-col items-center gap-3">
+                <Terminal size={28} className="text-slate-800" />
+                <p className="text-[13px] text-slate-500">No logs received yet</p>
+                <p className="text-[11px] text-slate-700 leading-relaxed max-w-[280px]">
+                  The agent is running but hasn't sent logs yet, or they haven't been indexed.<br />
+                  Try restarting the pyxis-agent service on this node.
+                </p>
+                <code className="text-[10px] text-slate-600 bg-[#0a0a14] px-3 py-1.5 rounded-lg border border-[#1e1e35] font-mono">
+                  systemctl restart pyxis-agent
+                </code>
               </div>
             )}
-            {logsData && sources.map((source) => {
-              const entries = logsData.by_source[source];
+
+            {/* Log entries grouped by source */}
+            {Object.entries(bySource).map(([source, entries]) => {
               const abbrev = SOURCE_ICON[source] ?? source.slice(0, 3).toUpperCase();
               const isOpen = !collapsed[source];
               return (
                 <div key={source} className="border-b border-[#1a1a2e]">
-                  <button onClick={() => setCollapsed((c) => ({ ...c, [source]: !c[source] }))}
-                    className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-white/[0.03] transition-colors">
+                  <button
+                    onClick={() => setCollapsed((c) => ({ ...c, [source]: !c[source] }))}
+                    className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-white/[0.03] transition-colors"
+                  >
                     {isOpen ? <ChevronDown size={11} className="text-slate-600" /> : <ChevronRight size={11} className="text-slate-600" />}
                     <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#252540] text-[#7c8cf8] font-mono tracking-wider">{abbrev}</span>
                     <span className="text-[12px] font-medium text-slate-400">{source}</span>
                     <span className="ml-auto text-[10px] text-slate-700 tabular-nums">{entries.length}</span>
                   </button>
                   {isOpen && (
-                    <div className="px-4 pb-3 space-y-px">
+                    <div className="pb-2">
                       {entries.map((e) => (
-                        <div key={e.id} className="flex gap-2 text-[11px] font-mono leading-5 hover:bg-white/[0.02] rounded px-1 -mx-1">
-                          <span className="text-slate-700 flex-shrink-0 w-[60px] tabular-nums">{fmtTime(e.ts)}</span>
+                        <div
+                          key={e.id}
+                          className={clsx(
+                            "group flex gap-2 text-[11px] font-mono leading-5 px-5 py-0.5 mx-0 hover:bg-white/[0.02]",
+                            LEVEL_BG[e.level] ?? ""
+                          )}
+                        >
+                          <span className="text-slate-700 flex-shrink-0 w-[76px] tabular-nums" title={fmtDate(e.ts)}>
+                            {fmtTs(e.ts)}
+                          </span>
                           <span className={clsx("flex-shrink-0 w-[46px]", LEVEL_COLOR[e.level] ?? "text-slate-400")}>
                             {e.level.slice(0, 4).toUpperCase()}
                           </span>
-                          <span className="text-slate-400 break-all">{e.message}</span>
+                          <span className="text-slate-400 break-all flex-1">{e.message}</span>
+                          <span className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                            <CopyBtn text={e.message} />
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -274,11 +436,13 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
               );
             })}
           </div>
-          {logsData && (
-            <div className="flex-shrink-0 px-4 py-2 border-t border-[#252540] text-[10px] text-slate-700 bg-[#111124]">
-              {sources.reduce((s, k) => s + logsData.by_source[k].length, 0)} lines · auto-refresh 10s
-            </div>
-          )}
+
+          {/* Status bar */}
+          <div className="flex-shrink-0 flex items-center gap-3 px-4 py-1.5 border-t border-[#252540] text-[10px] text-slate-700 bg-[#111124]">
+            <span className="tabular-nums">{filteredLogs.length} lines</span>
+            {sourceFilter && <span className="text-[#7c8cf8]/60">· filtered: {sourceFilter}</span>}
+            <span className="ml-auto">auto-refresh 10s</span>
+          </div>
         </>
       )}
 
@@ -311,10 +475,9 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
 
             {history.map((h) => (
               <div key={h.id} className="group">
-                {/* Command line */}
                 <div className="flex items-center gap-2 mb-1">
                   <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                    <span className="text-[#7c8cf8] font-mono text-[12px] flex-shrink-0">
+                    <span className="font-mono text-[12px] flex-shrink-0">
                       <span className="text-[#5eead4]">{promptHost}</span>
                       <span className="text-slate-600 mx-0.5">~</span>
                       <span className="text-slate-300">$</span>
@@ -328,14 +491,12 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
                     </span>
                     {h.exit_code === 0
                       ? <CheckCircle2 size={12} className="text-emerald-500" />
-                      : <XCircle size={12} className="text-red-400" />
-                    }
+                      : <XCircle size={12} className="text-red-400" />}
                     {h.exit_code !== 0 && (
                       <span className="text-[10px] text-red-400 font-mono">{h.exit_code}</span>
                     )}
                   </div>
                 </div>
-                {/* Output */}
                 {h.output && (
                   <pre className={clsx(
                     "font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all",
@@ -348,14 +509,13 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
               </div>
             ))}
 
-            {/* Running indicator */}
             {execMutation.isPending && (
               <div>
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[#7c8cf8] font-mono text-[12px]">
+                  <span className="font-mono text-[12px]">
                     <span className="text-[#5eead4]">{promptHost}</span>
                     <span className="text-slate-600 mx-0.5">~</span>
-                    <span className="text-slate-300">$</span>
+                    <span className="text-yellow-400">$</span>
                   </span>
                   <span className="text-slate-200 font-mono text-[12px]">{cmd || "…"}</span>
                 </div>
@@ -371,7 +531,6 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
 
           {/* Input bar */}
           <div className="flex-shrink-0 bg-[#111124] border-t border-[#252540]">
-            {/* Toolbar */}
             <div className="flex items-center justify-between px-4 pt-2 pb-1">
               <div className="flex items-center gap-1 text-[10px] text-slate-700">
                 <span className="font-mono">{node.name}</span>
@@ -383,7 +542,6 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
               </button>
             </div>
 
-            {/* Prompt input */}
             <div className="flex items-center gap-2 px-4 pb-3">
               <span className="font-mono text-[13px] flex-shrink-0">
                 <span className="text-[#5eead4]">{promptHost}</span>
@@ -405,12 +563,26 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
                 ? <Loader2 size={13} className="text-slate-600 animate-spin flex-shrink-0" />
                 : cmd.trim() && (
                   <kbd className="text-[9px] text-slate-700 border border-[#252540] rounded px-1 py-0.5 font-mono flex-shrink-0">↵</kbd>
-                )
-              }
+                )}
             </div>
           </div>
         </>
       )}
     </div>
   );
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+function flattenLogs(bySource: Record<string, NodeLogEntry[]>): NodeLogEntry[] {
+  return Object.values(bySource).flat().sort((a, b) => a.ts < b.ts ? -1 : 1);
+}
+
+function dedupe(logs: NodeLogEntry[]): NodeLogEntry[] {
+  const seen = new Set<string>();
+  return logs.filter((l) => {
+    if (seen.has(l.id)) return false;
+    seen.add(l.id);
+    return true;
+  }).sort((a, b) => a.ts < b.ts ? -1 : 1);
 }

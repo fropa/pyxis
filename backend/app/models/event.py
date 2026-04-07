@@ -31,6 +31,9 @@ class LogEvent(Base):
     message: Mapped[str] = mapped_column(Text)
     parsed: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
+    # Denormalized node name — lets us find logs even if node_id FK is NULL
+    node_name: Mapped[str | None] = mapped_column(String(255), index=True)
+
     # Stable fingerprint — used for deduplication and rate windows
     fingerprint: Mapped[str | None] = mapped_column(String(512), index=True)
 

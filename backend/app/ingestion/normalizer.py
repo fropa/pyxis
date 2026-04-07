@@ -38,6 +38,7 @@ async def normalize_event(raw: "RawEvent", tenant_id: str, db: AsyncSession) -> 
         id=str(uuid.uuid4()),
         tenant_id=tenant_id,
         node_id=node.id if node else None,
+        node_name=raw.node_name or None,
         event_ts=ts,
         source=raw.source,
         level=raw.level,

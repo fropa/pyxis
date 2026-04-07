@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Network, RefreshCw, CheckCircle2, GitBranch } from "lucide-react";
+import { Network, RefreshCw, CheckCircle2, GitBranch, Zap } from "lucide-react";
 import TopologyGraph from "../components/topology/TopologyGraph";
 import NodeLogsPanel from "../components/topology/NodeLogsPanel";
+import BroadcastConsole from "../components/topology/BroadcastConsole";
 import AlertFeed from "../components/alerts/AlertFeed";
 import IncidentPanel from "../components/incidents/IncidentPanel";
 import { api, getErrorMessage } from "../api/client";
@@ -29,6 +30,7 @@ export default function TopologyView() {
   const qc = useQueryClient();
   const [discoverResult, setDiscoverResult] = useState<{ edges_found: number; sources: string[] } | null>(null);
   const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null);
+  const [showBroadcast, setShowBroadcast] = useState(false);
 
   const { data: topology, isLoading, isError, error } = useQuery({
     queryKey: ["topology"],
@@ -96,6 +98,17 @@ export default function TopologyView() {
                   </span>
                 )}
               </div>
+            )}
+
+            {/* Broadcast button */}
+            {topology && topology.nodes.length > 0 && (
+              <button
+                onClick={() => setShowBroadcast(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-[#1e1e35] text-[#a5b4fc] border border-[#7c8cf8]/20 rounded-lg hover:bg-[#252550] hover:border-[#7c8cf8]/40 transition-all"
+              >
+                <Zap size={11} />
+                Broadcast
+              </button>
             )}
 
             {/* Re-discover button */}
@@ -197,6 +210,12 @@ export default function TopologyView() {
       <IncidentPanel />
       {selectedNode && (
         <NodeLogsPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
+      )}
+      {showBroadcast && topology && (
+        <BroadcastConsole
+          nodes={topology.nodes}
+          onClose={() => setShowBroadcast(false)}
+        />
       )}
     </div>
   );
