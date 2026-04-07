@@ -110,15 +110,43 @@ if [ ! -f backend/.env ]; then
     cp backend/.env.example backend/.env
 fi
 
-if grep -q "^ANTHROPIC_API_KEY=$" backend/.env || grep -q "^ANTHROPIC_API_KEY=sk-ant-\.\.\." backend/.env; then
+# Check if ANTHROPIC_API_KEY is already a real key (starts with sk-ant-)
+CURRENT_KEY=$(grep "^ANTHROPIC_API_KEY=" backend/.env | cut -d'=' -f2-)
+OFFLINE_MODE=false
+
+if [[ "$CURRENT_KEY" == sk-ant-* ]]; then
+    MASKED="${CURRENT_KEY:0:18}…${CURRENT_KEY: -4}"
+    info "Anthropic API key already configured: ${MASKED}"
+    read -rp "  Press Enter to keep it, or paste a new key: " NEW_KEY
+    if [ -n "$NEW_KEY" ]; then
+        sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$NEW_KEY|" backend/.env
+        info "API key updated."
+    fi
+else
     echo ""
-    echo -e "${BOLD}Anthropic API key required.${RESET}"
-    echo "Get one free at: https://console.anthropic.com"
-    read -rp "Paste your Anthropic API key: " ANTHROPIC_KEY
-    if [ -n "$ANTHROPIC_KEY" ]; then
-        sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$ANTHROPIC_KEY|" backend/.env
+    echo -e "${BOLD}╔══════════════════════════════════════════════╗${RESET}"
+    echo -e "${BOLD}║         Anthropic API Key Setup              ║${RESET}"
+    echo -e "${BOLD}╚══════════════════════════════════════════════╝${RESET}"
+    echo ""
+    echo "  Pyxis uses Claude AI for root cause analysis, runbooks,"
+    echo "  post-mortems, and the on-call assistant."
+    echo ""
+    echo "  Get a free key at: https://console.anthropic.com"
+    echo ""
+    echo -e "  ${YELLOW}[O]ffline${RESET} — install without AI features (you can add the key later)"
+    echo -e "  ${GREEN}[key]${RESET}    — paste your Anthropic API key now"
+    echo ""
+    read -rp "  Your choice: " INPUT
+
+    if [[ "${INPUT,,}" == "o" || "${INPUT,,}" == "offline" || -z "$INPUT" ]]; then
+        OFFLINE_MODE=true
+        warn "Offline mode — AI features disabled. Add ANTHROPIC_API_KEY to backend/.env later to enable them."
+    elif [[ "$INPUT" == sk-ant-* ]]; then
+        sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$INPUT|" backend/.env
+        info "API key saved."
     else
-        warn "No key provided — AI features will not work until you add it to backend/.env"
+        warn "Key doesn't look right (expected sk-ant-...). Saved anyway — check backend/.env if AI doesn't work."
+        sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$INPUT|" backend/.env
     fi
 fi
 
