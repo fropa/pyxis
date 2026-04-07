@@ -499,6 +499,67 @@ def exec_loop() -> None:
         time.sleep(EXEC_POLL_INTERVAL)
 
 
+# ── Kubernetes cluster monitor ────────────────────────────────────────────────
+
+K8S_STATE_URL = f"{API_URL}/api/v1/k8s/state"
+K8S_MONITOR_INTERVAL = int(os.environ.get("PYXIS_K8S_INTERVAL", "30"))
+
+
+def _kubectl_get(resource: str, all_namespaces: bool = False) -> list:
+    """Run kubectl get <resource> -o json and return items list."""
+    cmd = ["kubectl", "get", resource, "-o", "json"]
+    if all_namespaces:
+        cmd.append("--all-namespaces")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        if result.returncode == 0:
+            return json.loads(result.stdout).get("items", [])
+    except FileNotFoundError:
+        log.warning("kubectl not found — K8s monitoring disabled")
+    except Exception as e:
+        log.debug("kubectl get %s failed: %s", resource, e)
+    return []
+
+
+def k8s_monitor_loop() -> None:
+    """Snapshot cluster state and push to backend every K8S_MONITOR_INTERVAL seconds."""
+    # Check kubectl is available
+    if subprocess.run(["which", "kubectl"], capture_output=True).returncode != 0:
+        log.warning("kubectl not found — K8s cluster monitor disabled")
+        return
+
+    log.info("K8s cluster monitor started (interval=%ds)", K8S_MONITOR_INTERVAL)
+    while True:
+        try:
+            state = {
+                "nodes":       _kubectl_get("nodes"),
+                "pods":        _kubectl_get("pods",        all_namespaces=True),
+                "deployments": _kubectl_get("deployments", all_namespaces=True),
+                "namespaces":  _kubectl_get("namespaces"),
+            }
+            payload = json.dumps(state).encode()
+            req = urllib.request.Request(
+                K8S_STATE_URL,
+                data=payload,
+                headers={"Content-Type": "application/json", "X-API-Key": API_KEY},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10):
+                log.debug(
+                    "K8s state pushed: %d nodes, %d pods, %d deployments, %d namespaces",
+                    len(state["nodes"]), len(state["pods"]),
+                    len(state["deployments"]), len(state["namespaces"]),
+                )
+        except urllib.error.HTTPError as e:
+            log.error("K8s monitor push: HTTP %d", e.code)
+        except urllib.error.URLError as e:
+            log.warning("K8s monitor push: backend unreachable (%s)", e.reason)
+        except Exception as e:
+            log.warning("K8s monitor error: %s", e)
+
+        time.sleep(K8S_MONITOR_INTERVAL)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -540,6 +601,8 @@ def main() -> None:
         t = threading.Thread(target=watch_k8s_events, args=(args.k8s_namespace,), daemon=True)
         t.start()
         threads.append(t)
+        # Also start the cluster state monitor (nodes/pods/deployments)
+        threading.Thread(target=k8s_monitor_loop, daemon=True).start()
 
     if "pipeline" in sources:
         # Run in main thread (reads stdin)

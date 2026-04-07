@@ -10,6 +10,7 @@ import AdminView from "./views/Admin";
 import PlaygroundView from "./views/Playground";
 import TracesView from "./views/Traces";
 import AssistantView from "./views/Assistant";
+import K8sView from "./views/K8sView";
 import { useAppStore } from "./store";
 import { apiClient } from "./api/client";
 
@@ -49,6 +50,7 @@ export default function App() {
           <Route path="/playground" element={<PlaygroundView />} />
           <Route path="/traces" element={<TracesView />} />
           <Route path="/assistant" element={<AssistantView />} />
+          <Route path="/kubernetes" element={<K8sView />} />
         </Routes>
       </Layout>
     </BrowserRouter>

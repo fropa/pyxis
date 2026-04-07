@@ -179,11 +179,22 @@ export const api = {
     recent: (params?: { hours?: number; service?: string; limit?: number }) =>
       apiClient.get<TraceOut[]>("/api/v1/traces/recent", { params }).then((r) => r.data),
   },
+  k8s: {
+    state: () => apiClient.get<K8sState>("/api/v1/k8s/state").then((r) => r.data),
+  },
   assistant: {
     chat: (payload: { question: string; history: { role: string; content: string }[] }) =>
       apiClient.post<{ answer: string }>("/api/v1/assistant/chat", payload).then((r) => r.data),
   },
 };
+
+export interface K8sState {
+  nodes: Record<string, unknown>[];
+  pods: Record<string, unknown>[];
+  deployments: Record<string, unknown>[];
+  namespaces: Record<string, unknown>[];
+  updated_at: string;
+}
 
 export interface NotificationChannel {
   id: string;
