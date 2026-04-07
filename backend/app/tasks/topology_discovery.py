@@ -27,17 +27,20 @@ from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 
 import anthropic
+import time
 from sqlalchemy import select, func, Integer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import AsyncSessionLocal
+from app.core.redis import get_redis
 from app.models.span import Span
 from app.models.topology import Node, Edge
 from app.models.event import LogEvent
 from app.models.tenant import Tenant
 from app.models.deploy_event import DeployEvent
 from app.models.incident import Incident
+from app.tasks.heartbeat import HEARTBEAT_KEY_PREFIX, SILENT_THRESHOLD_SECONDS
 
 settings = get_settings()
 _anthropic = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -109,18 +112,21 @@ async def _discover_for_tenant(tenant_id: str, db: AsyncSession) -> dict:
             if key not in all_edges or e.confidence > all_edges[key].confidence:
                 all_edges[key] = e
 
-    if not all_edges:
-        return {"edges_found": 0, "nodes_found": 0, "sources": []}
+    edges_written = 0
+    node_map: dict[str, str] = {}
 
-    # ── Upsert nodes and edges ────────────────────────────────────────────────
-    service_names = {s for e in all_edges.values() for s in (e.src, e.dst)}
-    node_map = await _upsert_service_nodes(tenant_id, service_names, db)
-    edges_written = await _upsert_edges(tenant_id, all_edges, node_map, db)
+    if all_edges:
+        # ── Upsert nodes and edges ────────────────────────────────────────────
+        service_names = {s for e in all_edges.values() for s in (e.src, e.dst)}
+        node_map = await _upsert_service_nodes(tenant_id, service_names, db)
+        edges_written = await _upsert_edges(tenant_id, all_edges, node_map, db)
+        # ── Prune stale edges ─────────────────────────────────────────────────
+        await _prune_stale_edges(tenant_id, now, db)
 
-    # ── Prune stale edges ─────────────────────────────────────────────────────
-    await _prune_stale_edges(tenant_id, now, db)
+    # ── Update node statuses from heartbeats (always runs) ───────────────────
+    await _update_node_statuses_from_heartbeats(tenant_id, db)
 
-    # ── Health propagation ────────────────────────────────────────────────────
+    # ── Health propagation from span error rates ──────────────────────────────
     await _propagate_health(tenant_id, since_1h, db)
 
     sources_used = []
@@ -437,6 +443,44 @@ async def _upsert_edges(
 
     await db.flush()
     return written
+
+
+async def _update_node_statuses_from_heartbeats(tenant_id: str, db: AsyncSession) -> None:
+    """
+    Check Redis heartbeat keys for all nodes in this tenant.
+    Mark nodes healthy/down based on whether their heartbeat is recent.
+    This is the primary way linux_host / k8s_node agents appear as up or down.
+    """
+    r = await get_redis()
+    result = await db.execute(
+        select(Node).where(Node.tenant_id == tenant_id, Node.deleted_at.is_(None))
+    )
+    nodes = result.scalars().all()
+    if not nodes:
+        return
+
+    now_ts = time.time()
+    changed = False
+    for node in nodes:
+        key = f"{HEARTBEAT_KEY_PREFIX}:{tenant_id}:{node.id}"
+        raw = await r.get(key)
+        if raw is not None:
+            age = now_ts - float(raw)
+            new_status = "healthy" if age < SILENT_THRESHOLD_SECONDS else "down"
+        else:
+            # No heartbeat key at all — if node was recently created keep unknown,
+            # otherwise mark down
+            age_since_creation = (datetime.now(timezone.utc) - node.first_seen).total_seconds()
+            if age_since_creation < SILENT_THRESHOLD_SECONDS * 2:
+                continue  # brand new node, give it time to send first heartbeat
+            new_status = "down"
+
+        if node.status != new_status:
+            node.status = new_status
+            changed = True
+
+    if changed:
+        await db.flush()
 
 
 async def _prune_stale_edges(tenant_id: str, now: datetime, db: AsyncSession) -> None:
