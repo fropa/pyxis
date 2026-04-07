@@ -23,6 +23,7 @@ Config via env vars:
 import argparse
 import json
 import logging
+import logging.handlers
 import os
 import socket
 import subprocess
@@ -36,11 +37,20 @@ from typing import Any
 import urllib.request
 import urllib.error
 
-logging.basicConfig(
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    level=logging.INFO,
-    stream=sys.stdout,
+_LOG_DIR = os.environ.get("PYXIS_LOG_DIR", "/opt/pyxis/logs")
+_LOG_FILE = os.path.join(_LOG_DIR, "shipper.log")
+
+os.makedirs(_LOG_DIR, exist_ok=True)
+
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%dT%H:%M:%S")
+_file_handler = logging.handlers.RotatingFileHandler(
+    _LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3
 )
+_file_handler.setFormatter(_fmt)
+_stdout_handler = logging.StreamHandler(sys.stdout)
+_stdout_handler.setFormatter(_fmt)
+
+logging.basicConfig(level=logging.INFO, handlers=[_file_handler, _stdout_handler])
 log = logging.getLogger("pyxis-shipper")
 
 # ── Config ────────────────────────────────────────────────────────────────────
