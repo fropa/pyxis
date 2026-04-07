@@ -38,10 +38,15 @@ async def install_linux(
     sources: str = Query("syslog", description="Comma-separated sources: syslog,k8s"),
 ):
     script = _read_agent_file("install.sh")
-    script = script.replace("__API_KEY__", api_key)
-    script = script.replace("__API_URL__", api_url.rstrip("/"))
-    script = script.replace("syslog}", f"{sources}}}") if sources != "syslog" else script
-    return PlainTextResponse(script, media_type="text/x-shellscript")
+    # Prepend env vars — no placeholder replacement needed, works reliably
+    output = f"""#!/usr/bin/env bash
+export PYXIS_API_KEY="{api_key}"
+export PYXIS_API_URL="{api_url.rstrip('/')}"
+export PYXIS_SOURCES="{sources}"
+
+{script}
+"""
+    return PlainTextResponse(output, media_type="text/x-shellscript")
 
 
 # ── Raw shipper.py (fetched by install.sh) ────────────────────────────────────
