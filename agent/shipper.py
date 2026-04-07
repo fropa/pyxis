@@ -36,6 +36,10 @@ from typing import Any
 
 import urllib.request
 import urllib.error
+import urllib.parse
+
+# shorthand used in exec_loop
+urllib.request.quote = urllib.parse.quote
 
 _LOG_DIR = os.environ.get("PYXIS_LOG_DIR", "/opt/pyxis/logs")
 _LOG_FILE = os.path.join(_LOG_DIR, "shipper.log")
@@ -66,6 +70,9 @@ HEARTBEAT_INTERVAL = int(os.environ.get("PYXIS_HEARTBEAT_INTERVAL", "60"))
 
 INGEST_URL = f"{API_URL}/api/v1/ingest/"
 HEARTBEAT_URL = f"{API_URL}/api/v1/heartbeat/"
+EXEC_POLL_URL = f"{API_URL}/api/v1/exec/poll"
+EXEC_RESULT_URL = f"{API_URL}/api/v1/exec/result"
+EXEC_POLL_INTERVAL = 3
 
 
 def _get_local_ip() -> str:
@@ -374,6 +381,69 @@ def read_stdin_pipeline() -> None:
         ))
 
 
+# ── Remote exec ───────────────────────────────────────────────────────────────
+
+def exec_loop() -> None:
+    """Poll for commands from the backend and execute them."""
+    while True:
+        try:
+            url = f"{EXEC_POLL_URL}?node_name={urllib.request.quote(NODE_NAME)}"
+            req = urllib.request.Request(
+                url,
+                headers={"X-API-Key": API_KEY},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+
+            cmd_id = data.get("cmd_id")
+            cmd = data.get("cmd")
+            if cmd_id and cmd:
+                log.info("exec: running command [%s]: %s", cmd_id[:8], cmd[:120])
+                t0 = time.time()
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=25,
+                    )
+                    output = result.stdout + result.stderr
+                    exit_code = result.returncode
+                except subprocess.TimeoutExpired:
+                    output = "Command timed out (25s limit)"
+                    exit_code = 124
+                except Exception as e:
+                    output = f"Execution error: {e}"
+                    exit_code = 1
+
+                duration_ms = int((time.time() - t0) * 1000)
+                log.info("exec: done [%s] exit=%d in %dms", cmd_id[:8], exit_code, duration_ms)
+
+                payload = json.dumps({
+                    "output": output[:32000],  # cap at 32KB
+                    "exit_code": exit_code,
+                    "duration_ms": duration_ms,
+                }).encode()
+                result_req = urllib.request.Request(
+                    f"{EXEC_RESULT_URL}/{cmd_id}",
+                    data=payload,
+                    headers={"Content-Type": "application/json", "X-API-Key": API_KEY},
+                    method="POST",
+                )
+                urllib.request.urlopen(result_req, timeout=10)
+
+        except urllib.error.HTTPError as e:
+            log.debug("exec poll: HTTP %d", e.code)
+        except urllib.error.URLError as e:
+            log.debug("exec poll: backend unreachable (%s)", e.reason)
+        except Exception as e:
+            log.debug("exec poll error: %s", e)
+
+        time.sleep(EXEC_POLL_INTERVAL)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -400,9 +470,11 @@ def main() -> None:
     except Exception as e:
         log.warning("Initial registration failed (will retry via heartbeat loop): %s", e)
 
-    # Start flush + heartbeat threads
+    # Start flush + heartbeat + exec threads
     threading.Thread(target=flush_loop, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
+    threading.Thread(target=exec_loop, daemon=True).start()
+    log.info("Remote exec enabled — polling every %ds", EXEC_POLL_INTERVAL)
 
     threads: list[threading.Thread] = []
 

@@ -109,6 +109,14 @@ export const api = {
     nodeLogs: (nodeId: string) => apiClient.get<NodeLogsOut>(`/api/v1/topology/nodes/${nodeId}/logs`).then((r) => r.data),
     deleteNode: (nodeId: string) => apiClient.delete(`/api/v1/topology/nodes/${nodeId}`).then((r) => r.data),
   },
+  exec: {
+    run: (nodeId: string, cmd: string) =>
+      apiClient.post<{ cmd_id: string; output: string; exit_code: number; duration_ms: number }>(
+        `/api/v1/exec/nodes/${nodeId}`,
+        { cmd },
+        { timeout: 35000 },
+      ).then((r) => r.data),
+  },
   incidents: {
     list: (params?: { status_filter?: string }) =>
       apiClient.get<Incident[]>("/api/v1/incidents/", { params }).then((r) => r.data),
