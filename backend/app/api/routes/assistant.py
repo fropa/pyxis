@@ -6,9 +6,13 @@ topology, and recent anomalies. Perfect for 3am "what's wrong right now?"
 """
 from datetime import datetime, timedelta, timezone
 
+import logging
+
 import anthropic
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+
+log = logging.getLogger(__name__)
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,14 +64,21 @@ Use Markdown for formatting. Prefer bullet points over paragraphs.
     messages = [{"role": m.role, "content": m.content} for m in payload.history]
     messages.append({"role": "user", "content": payload.question})
 
-    response = await _anthropic.messages.create(
-        model=settings.CLAUDE_MODEL,
-        max_tokens=1024,
-        system=system,
-        messages=messages,
-    )
-
-    return AssistantResponse(answer=response.content[0].text)
+    try:
+        response = await _anthropic.messages.create(
+            model=settings.CLAUDE_MODEL,
+            max_tokens=1024,
+            system=system,
+            messages=messages,
+        )
+        return AssistantResponse(answer=response.content[0].text)
+    except anthropic.AuthenticationError:
+        raise HTTPException(status_code=503, detail="Anthropic API key is invalid. Update ANTHROPIC_API_KEY in backend/.env.")
+    except anthropic.PermissionDeniedError:
+        raise HTTPException(status_code=503, detail="Anthropic API credit balance is too low. Top up at console.anthropic.com.")
+    except Exception as e:
+        log.error("assistant chat error: %s", e)
+        raise HTTPException(status_code=503, detail=f"AI service error: {e}")
 
 
 async def _build_context(tenant_id: str, db: AsyncSession) -> str:
@@ -90,6 +101,7 @@ async def _build_context(tenant_id: str, db: AsyncSession) -> str:
         .where(
             Incident.tenant_id == tenant_id,
             Incident.status == "resolved",
+            Incident.resolved_at.isnot(None),
             Incident.resolved_at >= since_24h,
         )
         .order_by(desc(Incident.resolved_at))
@@ -143,7 +155,7 @@ async def _build_context(tenant_id: str, db: AsyncSession) -> str:
     if open_incidents:
         for inc in open_incidents:
             age = int((now - inc.started_at.replace(tzinfo=timezone.utc)).total_seconds() / 60)
-            storm = f" [STORM ×{inc.storm_size}]" if inc.storm_size > 1 else ""
+            storm = f" [STORM ×{inc.storm_size}]" if (inc.storm_size or 1) > 1 else ""
             lines.append(f"- **{inc.severity.upper()}**{storm} {inc.title} _(open {age}m)_")
             if inc.rca_summary:
                 lines.append(f"  → {inc.rca_summary[:120]}")
