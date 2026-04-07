@@ -244,7 +244,7 @@ def make_event(
     }
 
 
-# ── Syslog tail ───────────────────────────────────────────────────────────────
+# ── Syslog / Journal tail ─────────────────────────────────────────────────────
 
 SYSLOG_PATHS = [
     "/var/log/syslog",
@@ -253,7 +253,9 @@ SYSLOG_PATHS = [
     "/var/log/kern.log",
 ]
 
-ERROR_KEYWORDS = ["error", "fail", "critical", "panic", "oom", "killed", "denied"]
+# syslog priority → level
+_PRIORITY_LEVEL = {0: "critical", 1: "critical", 2: "critical",
+                   3: "error", 4: "warning", 5: "info", 6: "info", 7: "debug"}
 
 
 def infer_level(line: str) -> str:
@@ -267,7 +269,43 @@ def infer_level(line: str) -> str:
     return "info"
 
 
-def tail_syslog(path: str) -> None:
+def tail_journald() -> None:
+    """Stream system journal via journalctl --output=json (preferred on systemd hosts)."""
+    log.info("Tailing journald (systemd journal)")
+    try:
+        proc = subprocess.Popen(
+            ["journalctl", "-f", "-n", "50", "--output=json"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                message = entry.get("MESSAGE", "")
+                if not message or not isinstance(message, str):
+                    continue
+                unit = entry.get("SYSLOG_IDENTIFIER") or entry.get("_SYSTEMD_UNIT", "")
+                priority = int(entry.get("PRIORITY", 6))
+                level = _PRIORITY_LEVEL.get(priority, "info")
+                enqueue(make_event(
+                    "syslog",
+                    message,
+                    level=level,
+                    labels={"unit": unit},
+                ))
+            except (json.JSONDecodeError, ValueError):
+                continue
+    except FileNotFoundError:
+        log.warning("journalctl not found — will use syslog files instead")
+    except Exception as e:
+        log.error("journald tail error: %s", e)
+
+
+def tail_syslog_file(path: str) -> None:
     log.info("Tailing %s", path)
     try:
         proc = subprocess.Popen(
@@ -286,10 +324,18 @@ def tail_syslog(path: str) -> None:
 
 
 def start_syslog_tailers() -> None:
-    for path in SYSLOG_PATHS:
-        if Path(path).exists():
-            t = threading.Thread(target=tail_syslog, args=(path,), daemon=True)
-            t.start()
+    """Start journald first (preferred); fall back to log files if not available."""
+    # Try journalctl first
+    if subprocess.run(["which", "journalctl"], capture_output=True).returncode == 0:
+        threading.Thread(target=tail_journald, daemon=True).start()
+    else:
+        # Fall back to plain log files
+        found = [p for p in SYSLOG_PATHS if Path(p).exists()]
+        if found:
+            for path in found:
+                threading.Thread(target=tail_syslog_file, args=(path,), daemon=True).start()
+        else:
+            log.warning("No syslog source found (no journalctl, no log files). Logs will not be collected.")
 
 
 # ── K8s event watcher ─────────────────────────────────────────────────────────
