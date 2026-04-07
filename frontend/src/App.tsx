@@ -17,11 +17,17 @@ export default function App() {
   const apiKey = useAppStore((s) => s.apiKey);
   const setApiKey = useAppStore((s) => s.setApiKey);
 
-  // Auto-configure: fetch the default tenant key on first load if not set
+  // Always sync the API key from the server on load.
+  // This handles redeployments where the DB is wiped and a new tenant/key is created —
+  // without this, the browser keeps the old key and all agent installs use it (401s).
   useEffect(() => {
-    if (apiKey) return;
     apiClient.get<{ api_key: string | null }>("/api/v1/tenants/setup/key")
-      .then((r) => { if (r.data.api_key) setApiKey(r.data.api_key); })
+      .then((r) => {
+        const serverKey = r.data.api_key;
+        if (serverKey && serverKey !== apiKey) {
+          setApiKey(serverKey);
+        }
+      })
       .catch(() => {});
   }, []);
 

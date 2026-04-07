@@ -211,7 +211,13 @@ def heartbeat_loop() -> None:
         try:
             _send_heartbeat()
         except urllib.error.HTTPError as e:
-            log.error("Heartbeat: HTTP %d from backend — check API key", e.code)
+            if e.code == 401:
+                log.error(
+                    "Heartbeat: 401 Unauthorized — PYXIS_API_KEY is invalid or the server was redeployed. "
+                    "Reinstall the agent with a fresh key from the Pyxis dashboard."
+                )
+            else:
+                log.error("Heartbeat: HTTP %d from backend", e.code)
         except urllib.error.URLError as e:
             log.warning("Heartbeat: backend unreachable (%s)", e.reason)
         except Exception as e:
@@ -435,7 +441,10 @@ def exec_loop() -> None:
                 urllib.request.urlopen(result_req, timeout=10)
 
         except urllib.error.HTTPError as e:
-            log.debug("exec poll: HTTP %d", e.code)
+            if e.code == 401:
+                log.error("exec poll: 401 Unauthorized — API key invalid, reinstall agent")
+            else:
+                log.debug("exec poll: HTTP %d", e.code)
         except urllib.error.URLError as e:
             log.debug("exec poll: backend unreachable (%s)", e.reason)
         except Exception as e:
