@@ -74,9 +74,30 @@ else
     info "Docker already installed: $(docker --version)"
 fi
 
-# ── 3. Clone repo ──────────────────────────────────────────────────────────────
+# ── 3. Install nginx if missing ────────────────────────────────────────────────
+if ! command -v nginx &>/dev/null; then
+    info "Installing nginx..."
+    case "$OS" in
+        ubuntu|debian|linuxmint|pop)
+            sudo apt-get install -y -qq nginx ;;
+        centos|rhel|almalinux|rocky)
+            sudo yum install -y -q nginx
+            sudo systemctl enable --now nginx ;;
+        fedora)
+            sudo dnf install -y -q nginx
+            sudo systemctl enable --now nginx ;;
+        arch|manjaro)
+            sudo pacman -Sy --noconfirm nginx
+            sudo systemctl enable --now nginx ;;
+    esac
+    info "nginx installed."
+else
+    info "nginx already installed: $(nginx -v 2>&1)"
+fi
+
+# ── 4. Clone or update repo ────────────────────────────────────────────────────
 if [ -d "$DIR" ]; then
-    warn "Directory '$DIR' already exists — pulling latest changes."
+    info "Updating Pyxis..."
     cd "$DIR" && git pull --quiet
 else
     info "Cloning Pyxis..."
@@ -84,7 +105,7 @@ else
     cd "$DIR"
 fi
 
-# ── 4. Configure environment ───────────────────────────────────────────────────
+# ── 5. Configure environment ───────────────────────────────────────────────────
 if [ ! -f backend/.env ]; then
     cp backend/.env.example backend/.env
 fi
@@ -97,15 +118,15 @@ if grep -q "^ANTHROPIC_API_KEY=$" backend/.env || grep -q "^ANTHROPIC_API_KEY=sk
     if [ -n "$ANTHROPIC_KEY" ]; then
         sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$ANTHROPIC_KEY|" backend/.env
     else
-        warn "No key provided — AI features (RCA, runbooks, playground) will not work until you add it to backend/.env"
+        warn "No key provided — AI features will not work until you add it to backend/.env"
     fi
 fi
 
-# ── 5. Start the stack ─────────────────────────────────────────────────────────
+# ── 6. Start the stack ─────────────────────────────────────────────────────────
 info "Starting Pyxis (this may take a few minutes on first run)..."
 docker compose up -d --build
 
-# ── 6. Wait for backend ────────────────────────────────────────────────────────
+# ── 7. Wait for backend ────────────────────────────────────────────────────────
 info "Waiting for backend to be ready..."
 for i in $(seq 1 30); do
     if curl -sf http://localhost:8000/health > /dev/null 2>&1; then
@@ -115,33 +136,96 @@ for i in $(seq 1 30); do
 done
 
 if ! curl -sf http://localhost:8000/health > /dev/null 2>&1; then
-    warn "Backend didn't respond in time. Check logs: docker compose logs backend"
-else
-    # ── 7. Create default tenant ───────────────────────────────────────────────
-    RESPONSE=$(curl -sf -X POST http://localhost:8000/api/v1/tenants/ \
-        -H "Content-Type: application/json" \
-        -d '{"name":"default","contact_email":"admin@localhost"}' 2>/dev/null || echo "")
-
-    if [ -n "$RESPONSE" ]; then
-        API_KEY=$(echo "$RESPONSE" | grep -o '"api_key":"[^"]*"' | cut -d'"' -f4)
-    else
-        # Tenant may already exist — fetch it
-        API_KEY=$(curl -sf http://localhost:8000/api/v1/tenants/ 2>/dev/null | grep -o '"api_key":"[^"]*"' | head -1 | cut -d'"' -f4)
-    fi
-
-    echo ""
-    echo -e "${BOLD}${GREEN}✓ Pyxis is running!${RESET}"
-    echo ""
-    echo -e "  Dashboard   →  ${BOLD}http://localhost:5173${RESET}"
-    echo -e "  API docs    →  ${BOLD}http://localhost:8000/docs${RESET}"
-    echo ""
-    if [ -n "$API_KEY" ]; then
-        echo -e "  Your API key:  ${BOLD}${API_KEY}${RESET}"
-        echo ""
-        echo "  Paste this key into the Settings page in the dashboard."
-        echo ""
-        echo "  Or set it immediately in the browser console:"
-        echo -e "  ${YELLOW}localStorage.setItem('pyxis-store', JSON.stringify({state:{apiKey:'${API_KEY}'},version:0})); location.reload();${RESET}"
-    fi
-    echo ""
+    warn "Backend didn't respond in time. Check: docker compose logs backend"
+    exit 1
 fi
+
+# ── 8. Create default tenant ───────────────────────────────────────────────────
+RESPONSE=$(curl -sf -X POST http://localhost:8000/api/v1/tenants/ \
+    -H "Content-Type: application/json" \
+    -d '{"name":"default","contact_email":"admin@localhost"}' 2>/dev/null || echo "")
+
+if [ -n "$RESPONSE" ]; then
+    API_KEY=$(echo "$RESPONSE" | grep -o '"api_key":"[^"]*"' | cut -d'"' -f4)
+else
+    API_KEY=$(curl -sf http://localhost:8000/api/v1/tenants/ 2>/dev/null | grep -o '"api_key":"[^"]*"' | head -1 | cut -d'"' -f4)
+fi
+
+# ── 9. Configure nginx ─────────────────────────────────────────────────────────
+info "Configuring nginx..."
+
+SERVER_IP=$(hostname -I | awk '{print $1}')
+
+sudo tee /etc/nginx/sites-available/pyxis > /dev/null <<NGINX
+server {
+    listen 80;
+    server_name ${SERVER_IP} _;
+
+    location / {
+        proxy_pass         http://127.0.0.1:5173;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade    \$http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host       \$host;
+    }
+
+    location /api/ {
+        proxy_pass         http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host            \$host;
+        proxy_set_header   X-Real-IP       \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_read_timeout 120s;
+    }
+
+    location /ws/ {
+        proxy_pass         http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade    \$http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host       \$host;
+        proxy_read_timeout 3600s;
+    }
+
+    location /install {
+        proxy_pass       http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+    }
+
+    location /docs {
+        proxy_pass       http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+    }
+}
+NGINX
+
+# Enable site (debian/ubuntu style — skip if sites-enabled doesn't exist)
+if [ -d /etc/nginx/sites-enabled ]; then
+    sudo ln -sf /etc/nginx/sites-available/pyxis /etc/nginx/sites-enabled/pyxis
+    # Remove default site if it's still there and would conflict on port 80
+    sudo rm -f /etc/nginx/sites-enabled/default
+fi
+
+if sudo nginx -t 2>/dev/null; then
+    sudo systemctl reload nginx
+    info "nginx configured and reloaded."
+else
+    warn "nginx config test failed — check: sudo nginx -t"
+fi
+
+# ── 10. Done ───────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BOLD}${GREEN}✓ Pyxis is running!${RESET}"
+echo ""
+echo -e "  Dashboard  →  ${BOLD}http://${SERVER_IP}${RESET}"
+echo -e "  API docs   →  ${BOLD}http://${SERVER_IP}/docs${RESET}"
+echo ""
+if [ -n "$API_KEY" ]; then
+    echo -e "  API key:  ${BOLD}${API_KEY}${RESET}"
+    echo ""
+    echo "  Paste into Settings, or run in browser console:"
+    echo -e "  ${YELLOW}localStorage.setItem('pyxis-store', JSON.stringify({state:{apiKey:'${API_KEY}'},version:0})); location.reload();${RESET}"
+fi
+echo ""
