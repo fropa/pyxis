@@ -117,7 +117,8 @@ OFFLINE_MODE=false
 if [[ "$CURRENT_KEY" == sk-ant-* ]]; then
     MASKED="${CURRENT_KEY:0:18}…${CURRENT_KEY: -4}"
     info "Anthropic API key already configured: ${MASKED}"
-    read -rp "  Press Enter to keep it, or paste a new key: " NEW_KEY
+    printf "  Press Enter to keep it, or paste a new key: " >&2
+    read -r NEW_KEY </dev/tty
     if [ -n "$NEW_KEY" ]; then
         sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=$NEW_KEY|" backend/.env
         info "API key updated."
@@ -133,10 +134,11 @@ else
     echo ""
     echo "  Get a free key at: https://console.anthropic.com"
     echo ""
-    echo -e "  ${YELLOW}[O]ffline${RESET} — install without AI features (you can add the key later)"
+    echo -e "  ${YELLOW}[O]ffline${RESET} — install without AI features (add the key later)"
     echo -e "  ${GREEN}[key]${RESET}    — paste your Anthropic API key now"
     echo ""
-    read -rp "  Your choice: " INPUT
+    printf "  Your choice: " >&2
+    read -r INPUT </dev/tty
 
     if [[ "${INPUT,,}" == "o" || "${INPUT,,}" == "offline" || -z "$INPUT" ]]; then
         OFFLINE_MODE=true
