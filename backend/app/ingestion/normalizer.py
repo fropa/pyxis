@@ -88,6 +88,10 @@ async def _upsert_node(raw: "RawEvent", tenant_id: str, db: AsyncSession) -> Nod
     if node:
         node.last_seen = datetime.now(timezone.utc)
         node.labels = raw.labels or node.labels
+        # Restore if soft-deleted — agent is sending logs again
+        if node.deleted_at is not None:
+            node.deleted_at = None
+            node.status = "healthy"
     else:
         node = Node(
             id=str(uuid.uuid4()),
