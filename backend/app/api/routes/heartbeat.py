@@ -60,6 +60,11 @@ async def heartbeat(
     else:
         meta = dict(node.metadata_ or {})
         changed = False
+        # Restore if previously deleted — agent coming back online
+        if node.deleted_at is not None:
+            node.deleted_at = None
+            node.status = "healthy"
+            changed = True
         if payload.ip_address and meta.get("ip_address") != payload.ip_address:
             meta["ip_address"] = payload.ip_address
             node.metadata_ = meta
