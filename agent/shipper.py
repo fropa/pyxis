@@ -270,39 +270,54 @@ def infer_level(line: str) -> str:
 
 
 def tail_journald() -> None:
-    """Stream system journal via journalctl --output=json (preferred on systemd hosts)."""
-    log.info("Tailing journald (systemd journal)")
-    try:
-        proc = subprocess.Popen(
-            ["journalctl", "-f", "-n", "50", "--output=json"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        )
-        for line in proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-                message = entry.get("MESSAGE", "")
-                if not message or not isinstance(message, str):
+    """Stream system journal via journalctl --output=json (preferred on systemd hosts).
+    Retries indefinitely if journalctl exits unexpectedly."""
+    retry_delay = 5
+    while True:
+        log.info("Tailing journald (systemd journal)")
+        try:
+            proc = subprocess.Popen(
+                ["journalctl", "-f", "-n", "50", "--output=json", "--no-pager"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                # bufsize=1 ensures we read line-by-line without waiting for an 8KB buffer
+                bufsize=1,
+                text=True,
+            )
+            # readline() unblocks as soon as journalctl writes a newline,
+            # unlike "for line in proc.stdout" which may buffer
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    # journalctl exited — break inner loop to restart
+                    break
+                line = line.strip()
+                if not line:
                     continue
-                unit = entry.get("SYSLOG_IDENTIFIER") or entry.get("_SYSTEMD_UNIT", "")
-                priority = int(entry.get("PRIORITY", 6))
-                level = _PRIORITY_LEVEL.get(priority, "info")
-                enqueue(make_event(
-                    "syslog",
-                    message,
-                    level=level,
-                    labels={"unit": unit},
-                ))
-            except (json.JSONDecodeError, ValueError):
-                continue
-    except FileNotFoundError:
-        log.warning("journalctl not found — will use syslog files instead")
-    except Exception as e:
-        log.error("journald tail error: %s", e)
+                try:
+                    entry = json.loads(line)
+                    message = entry.get("MESSAGE", "")
+                    if not message or not isinstance(message, str):
+                        continue
+                    unit = entry.get("SYSLOG_IDENTIFIER") or entry.get("_SYSTEMD_UNIT", "")
+                    priority = int(entry.get("PRIORITY", 6))
+                    level = _PRIORITY_LEVEL.get(priority, "info")
+                    enqueue(make_event(
+                        "syslog",
+                        message,
+                        level=level,
+                        labels={"unit": unit},
+                    ))
+                except (json.JSONDecodeError, ValueError):
+                    continue
+            proc.wait()
+            log.warning("journalctl exited (code=%s), restarting in %ds…", proc.returncode, retry_delay)
+        except FileNotFoundError:
+            log.warning("journalctl not found — falling back to syslog files")
+            return  # don't retry — start_syslog_tailers will use files
+        except Exception as e:
+            log.error("journald tail error: %s — restarting in %ds", e, retry_delay)
+        time.sleep(retry_delay)
 
 
 def tail_syslog_file(path: str) -> None:
