@@ -21,6 +21,7 @@ Config via env vars:
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -73,6 +74,26 @@ HEARTBEAT_URL = f"{API_URL}/api/v1/heartbeat/"
 EXEC_POLL_URL = f"{API_URL}/api/v1/exec/poll"
 EXEC_RESULT_URL = f"{API_URL}/api/v1/exec/result"
 EXEC_POLL_INTERVAL = 3
+
+SHIPPER_PATH = os.environ.get("PYXIS_SHIPPER_PATH", "/opt/pyxis/shipper.py")
+CONFIG_PATH  = os.environ.get("PYXIS_CONFIG_PATH", "/opt/pyxis/config.json")
+AUTOUPDATE_INTERVAL = int(os.environ.get("PYXIS_AUTOUPDATE_INTERVAL", "300"))  # 5 min
+
+# ── Persisted agent config (overrides env vars when set from web) ─────────────
+
+def _load_local_config() -> dict:
+    try:
+        return json.loads(Path(CONFIG_PATH).read_text())
+    except Exception:
+        return {}
+
+def _save_local_config(cfg: dict) -> None:
+    try:
+        Path(CONFIG_PATH).write_text(json.dumps(cfg))
+    except Exception as e:
+        log.warning("Failed to save config: %s", e)
+
+_local_config: dict = {}  # populated in main() after log setup
 
 
 def _get_local_ip() -> str:
@@ -189,7 +210,7 @@ def _drain_disk_buffer() -> None:
 
 # ── Heartbeat ─────────────────────────────────────────────────────────────────
 
-def _send_heartbeat() -> None:
+def _send_heartbeat() -> dict:
     payload = json.dumps({
         "node_name": NODE_NAME,
         "node_kind": NODE_KIND,
@@ -202,14 +223,32 @@ def _send_heartbeat() -> None:
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
-        log.debug("Heartbeat sent → %d", resp.status)
+        return json.loads(resp.read())
+
+
+def _apply_config_if_changed(new_config: dict) -> None:
+    """If the backend sent a new agent config, save it and restart to apply."""
+    global _local_config
+    if not new_config or new_config == _local_config:
+        return
+    log.info("Agent config changed (sources=%s, paths=%s) — restarting to apply",
+             new_config.get("sources"), new_config.get("custom_log_paths"))
+    _save_local_config(new_config)
+    _local_config = new_config
+    # Restart via systemd so the new config is loaded on startup
+    try:
+        subprocess.run(["systemctl", "restart", "pyxis-agent"], timeout=10)
+    except Exception as e:
+        log.warning("Could not restart via systemd (%s) — restart the agent manually", e)
 
 
 def heartbeat_loop() -> None:
-    """Send a heartbeat every HEARTBEAT_INTERVAL seconds."""
+    """Send a heartbeat every HEARTBEAT_INTERVAL seconds, check for config changes."""
     while True:
         try:
-            _send_heartbeat()
+            resp = _send_heartbeat()
+            log.debug("Heartbeat sent → node_id=%s", resp.get("node_id"))
+            _apply_config_if_changed(resp.get("config") or {})
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 log.error(
@@ -338,13 +377,98 @@ def tail_syslog_file(path: str) -> None:
         log.error("syslog tail error on %s: %s", path, e)
 
 
+# Auth-related syslog identifiers to collect as "auth_log" source
+_AUTH_IDENTIFIERS = ["sshd", "sudo", "su", "login", "passwd", "useradd", "userdel",
+                     "groupadd", "groupdel", "chpasswd", "systemd-logind", "polkitd"]
+
+
+def tail_auth_journald() -> None:
+    """Stream SSH / sudo / auth events from journald as 'auth_log' source."""
+    identifier_args = []
+    for ident in _AUTH_IDENTIFIERS:
+        identifier_args += ["--identifier", ident]
+
+    retry_delay = 5
+    while True:
+        log.info("Tailing auth logs from journald")
+        try:
+            proc = subprocess.Popen(
+                ["journalctl", "-f", "-n", "100", "--output=json", "--no-pager"] + identifier_args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=1,
+                text=True,
+            )
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    message = entry.get("MESSAGE", "")
+                    if not message or not isinstance(message, str):
+                        continue
+                    unit = entry.get("SYSLOG_IDENTIFIER") or entry.get("_SYSTEMD_UNIT", "")
+                    priority = int(entry.get("PRIORITY", 6))
+                    level = _PRIORITY_LEVEL.get(priority, "info")
+                    enqueue(make_event(
+                        "auth_log",
+                        message,
+                        level=level,
+                        labels={"unit": unit},
+                    ))
+                except (json.JSONDecodeError, ValueError):
+                    continue
+            proc.wait()
+            log.warning("auth journalctl exited (code=%s), restarting in %ds…", proc.returncode, retry_delay)
+        except FileNotFoundError:
+            log.warning("journalctl not found — auth log collection disabled")
+            return
+        except Exception as e:
+            log.error("auth journald tail error: %s — restarting in %ds", e, retry_delay)
+        time.sleep(retry_delay)
+
+
+def tail_custom_file(path: str) -> None:
+    """Tail a custom log file path, sending entries as 'app_log' source."""
+    p = Path(path)
+    if not p.exists():
+        log.warning("Custom log path not found: %s — will retry when file appears", path)
+    log.info("Tailing custom log: %s", path)
+    retry_delay = 10
+    while True:
+        try:
+            proc = subprocess.Popen(
+                ["tail", "-F", "-n", "0", path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=1,
+                text=True,
+            )
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                line = line.rstrip()
+                if not line:
+                    continue
+                enqueue(make_event("app_log", line, level=infer_level(line),
+                                   labels={"path": path}))
+            proc.wait()
+            log.warning("tail on %s exited, restarting in %ds…", path, retry_delay)
+        except Exception as e:
+            log.error("custom file tail error on %s: %s", path, e)
+        time.sleep(retry_delay)
+
+
 def start_syslog_tailers() -> None:
     """Start journald first (preferred); fall back to log files if not available."""
-    # Try journalctl first
     if subprocess.run(["which", "journalctl"], capture_output=True).returncode == 0:
         threading.Thread(target=tail_journald, daemon=True).start()
     else:
-        # Fall back to plain log files
         found = [p for p in SYSLOG_PATHS if Path(p).exists()]
         if found:
             for path in found:
@@ -514,6 +638,59 @@ def exec_loop() -> None:
         time.sleep(EXEC_POLL_INTERVAL)
 
 
+# ── Auto-update ───────────────────────────────────────────────────────────────
+
+def autoupdate_loop() -> None:
+    """Check for a new shipper.py every AUTOUPDATE_INTERVAL seconds.
+    If the server has a newer version, download and restart via systemd."""
+    while True:
+        time.sleep(AUTOUPDATE_INTERVAL)
+        try:
+            # Compute hash of the running script
+            try:
+                current_hash = hashlib.sha256(Path(SHIPPER_PATH).read_bytes()).hexdigest()
+            except Exception:
+                continue  # can't read own file (Docker / non-standard install), skip
+
+            # Ask backend for its current hash
+            req = urllib.request.Request(
+                f"{API_URL}/install/shipper-version",
+                headers={"X-API-Key": API_KEY},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+
+            remote_hash = data.get("sha256", "")
+            if not remote_hash or remote_hash == current_hash:
+                log.debug("Auto-update: up to date (%s…)", current_hash[:12])
+                continue
+
+            log.info("Auto-update: new version detected, downloading…")
+            dl_req = urllib.request.Request(
+                f"{API_URL}/install/shipper.py",
+                headers={"X-API-Key": API_KEY},
+                method="GET",
+            )
+            with urllib.request.urlopen(dl_req, timeout=30) as resp:
+                new_content = resp.read()
+
+            # Verify downloaded content before overwriting
+            if hashlib.sha256(new_content).hexdigest() != remote_hash:
+                log.error("Auto-update: hash mismatch after download — skipping")
+                continue
+
+            Path(SHIPPER_PATH).write_bytes(new_content)
+            log.info("Auto-update: new agent written to %s, restarting service…", SHIPPER_PATH)
+            subprocess.run(["systemctl", "restart", "pyxis-agent"], timeout=10)
+            # systemd will kill this process — code below won't run
+
+        except urllib.error.URLError:
+            log.debug("Auto-update: backend unreachable, skipping")
+        except Exception as e:
+            log.warning("Auto-update check failed: %s", e)
+
+
 # ── Kubernetes cluster monitor ────────────────────────────────────────────────
 
 K8S_STATE_URL = f"{API_URL}/api/v1/k8s/state"
@@ -578,11 +755,13 @@ def k8s_monitor_loop() -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    global _local_config
+
     parser = argparse.ArgumentParser(description="Pyxis log shipper")
     parser.add_argument(
         "--sources",
-        default="syslog",
-        help="Comma-separated sources: syslog,k8s,pipeline",
+        default=os.environ.get("PYXIS_SOURCES", "syslog"),
+        help="Comma-separated sources: syslog,auth,k8s,pipeline",
     )
     parser.add_argument("--k8s-namespace", default="--all-namespaces")
     args = parser.parse_args()
@@ -591,36 +770,52 @@ def main() -> None:
         log.error("PYXIS_API_KEY not set")
         sys.exit(1)
 
-    sources = [s.strip() for s in args.sources.split(",")]
+    # Load persisted config (may override CLI sources)
+    _local_config = _load_local_config()
+    if _local_config.get("sources_str"):
+        sources_str = _local_config["sources_str"]
+        log.info("Using web-configured sources: %s", sources_str)
+    else:
+        sources_str = args.sources
+    sources = [s.strip() for s in sources_str.split(",") if s.strip()]
+    custom_paths = _local_config.get("custom_log_paths", [])
+
     log.info("Starting Pyxis shipper | node=%s | ip=%s | sources=%s", NODE_NAME, NODE_IP or "unknown", sources)
 
     # Register node immediately on startup
     try:
-        _send_heartbeat()
-        log.info("Node registered with backend")
+        resp = _send_heartbeat()
+        log.info("Node registered with backend (node_id=%s)", resp.get("node_id"))
+        # Apply config from first heartbeat response
+        _apply_config_if_changed(resp.get("config") or {})
     except Exception as e:
-        log.warning("Initial registration failed (will retry via heartbeat loop): %s", e)
+        log.warning("Initial heartbeat failed (will retry via heartbeat loop): %s", e)
 
-    # Start flush + heartbeat + exec threads
+    # Core threads — always run
     threading.Thread(target=flush_loop, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=exec_loop, daemon=True).start()
-    log.info("Remote exec enabled — polling every %ds", EXEC_POLL_INTERVAL)
-
-    threads: list[threading.Thread] = []
+    threading.Thread(target=autoupdate_loop, daemon=True).start()
+    log.info("Remote exec + auto-update enabled")
 
     if "syslog" in sources:
         start_syslog_tailers()
 
+    if "auth" in sources:
+        threading.Thread(target=tail_auth_journald, daemon=True).start()
+        log.info("Auth/SSH log collection enabled")
+
     if "k8s" in sources:
-        t = threading.Thread(target=watch_k8s_events, args=(args.k8s_namespace,), daemon=True)
-        t.start()
-        threads.append(t)
-        # Also start the cluster state monitor (nodes/pods/deployments)
+        threading.Thread(target=watch_k8s_events, args=(args.k8s_namespace,), daemon=True).start()
         threading.Thread(target=k8s_monitor_loop, daemon=True).start()
+        log.info("K8s event watcher + cluster monitor enabled")
+
+    for path in custom_paths:
+        if path.strip():
+            threading.Thread(target=tail_custom_file, args=(path.strip(),), daemon=True).start()
+            log.info("Custom log path: %s", path)
 
     if "pipeline" in sources:
-        # Run in main thread (reads stdin)
         read_stdin_pipeline()
         return
 

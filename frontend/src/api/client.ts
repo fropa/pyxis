@@ -110,6 +110,8 @@ export const api = {
     nodeLogs: (nodeId: string, params?: { before?: string; limit?: number; source?: string }) =>
       apiClient.get<NodeLogsOut>(`/api/v1/topology/nodes/${nodeId}/logs`, { params }).then((r) => r.data),
     deleteNode: (nodeId: string) => apiClient.delete(`/api/v1/topology/nodes/${nodeId}`).then((r) => r.data),
+    updateNodeConfig: (nodeId: string, config: { sources: string[]; custom_log_paths: string[] }) =>
+      apiClient.patch(`/api/v1/topology/nodes/${nodeId}/config`, config).then((r) => r.data),
   },
   exec: {
     run: (nodeId: string, cmd: string) =>

@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
-  X, Loader2, Terminal, ChevronDown, ChevronRight, Trash2,
+  Loader2, Terminal, ChevronDown, ChevronRight, Trash2,
   ScrollText, TerminalSquare, CheckCircle2, XCircle, Clock,
-  Copy, Check, Eraser, Zap, ChevronUp, Filter, RefreshCw,
+  Copy, Check, Eraser, Zap, ChevronUp, Filter, RefreshCw, Settings,
+  Plus, X,
 } from "lucide-react";
 import { api, getErrorMessage } from "../../api/client";
 import type { TopologyNode, NodeLogEntry } from "../../api/client";
@@ -57,7 +58,14 @@ interface HistoryEntry {
   ts: Date;
 }
 
-type Tab = "logs" | "console";
+type Tab = "logs" | "console" | "config";
+
+const AVAILABLE_SOURCES = [
+  { id: "syslog", label: "Syslog / journald",    desc: "All system events via journald" },
+  { id: "auth",   label: "SSH & Auth",            desc: "sshd, sudo, su, login events" },
+  { id: "k8s",    label: "Kubernetes events",     desc: "kubectl required on the node" },
+  { id: "pipeline", label: "CI/CD pipeline",      desc: "Stdin mode (piped builds)" },
+];
 
 // ── Copy button ───────────────────────────────────────────────────────────────
 
@@ -98,6 +106,22 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [navIdx, setNavIdx] = useState(-1);
   const [sourceFilter, setSourceFilter] = useState<string | null>(null);
+
+  // ── Config tab state ──────────────────────────────────────────────────────
+  const existingConfig = (node.metadata?.agent_config ?? {}) as { sources?: string[]; custom_log_paths?: string[] };
+  const [cfgSources, setCfgSources] = useState<string[]>(existingConfig.sources ?? ["syslog"]);
+  const [cfgPaths, setCfgPaths] = useState<string[]>(existingConfig.custom_log_paths ?? []);
+  const [cfgNewPath, setCfgNewPath] = useState("");
+  const [cfgSaved, setCfgSaved] = useState(false);
+
+  const configMutation = useMutation({
+    mutationFn: () => api.topology.updateNodeConfig(node.id, { sources: cfgSources, custom_log_paths: cfgPaths }),
+    onSuccess: () => {
+      setCfgSaved(true);
+      setTimeout(() => setCfgSaved(false), 3000);
+      qc.invalidateQueries({ queryKey: ["topology"] });
+    },
+  });
 
   // Accumulated log entries (merged across pagination pages)
   const [allLogs, setAllLogs] = useState<NodeLogEntry[]>([]);
@@ -298,15 +322,19 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
 
       {/* ── Tabs ── */}
       <div className="flex border-b border-[#252540] flex-shrink-0 bg-[#111124]">
-        {(["logs", "console"] as Tab[]).map((t) => (
-          <button key={t} onClick={() => setTab(t)}
+        {([
+          { id: "logs",    icon: <ScrollText size={12} />,    label: "Logs" },
+          { id: "console", icon: <TerminalSquare size={12} />, label: "Console" },
+          { id: "config",  icon: <Settings size={12} />,       label: "Config" },
+        ] as { id: Tab; icon: React.ReactNode; label: string }[]).map((t) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
             className={clsx(
               "flex items-center gap-1.5 px-5 py-2.5 text-[12px] font-medium border-b-2 transition-all",
-              tab === t ? "border-[#7c8cf8] text-[#a5b4fc]" : "border-transparent text-slate-600 hover:text-slate-400"
+              tab === t.id ? "border-[#7c8cf8] text-[#a5b4fc]" : "border-transparent text-slate-600 hover:text-slate-400"
             )}>
-            {t === "logs" ? <ScrollText size={12} /> : <TerminalSquare size={12} />}
-            {t === "logs" ? "Logs" : "Console"}
-            {t === "logs" && filteredLogs.length > 0 && (
+            {t.icon}
+            {t.label}
+            {t.id === "logs" && filteredLogs.length > 0 && (
               <span className="ml-1 px-1.5 py-0.5 text-[9px] rounded-full bg-[#252540] text-slate-500 tabular-nums">
                 {filteredLogs.length}
               </span>
@@ -567,6 +595,115 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
             </div>
           </div>
         </>
+      )}
+      {/* ── Config tab ── */}
+      {tab === "config" && (
+        <div className="flex-1 overflow-y-auto p-5 space-y-6">
+
+          {/* Sources */}
+          <div>
+            <p className="text-[12px] font-semibold text-slate-300 mb-1">Log sources</p>
+            <p className="text-[11px] text-slate-600 mb-3">
+              Changes apply within 60 s — the agent reads this on the next heartbeat and restarts automatically.
+            </p>
+            <div className="space-y-2">
+              {AVAILABLE_SOURCES.map(({ id, label, desc }) => {
+                const checked = cfgSources.includes(id);
+                return (
+                  <button
+                    key={id}
+                    onClick={() => setCfgSources((prev) =>
+                      checked ? prev.filter((s) => s !== id) : [...prev, id]
+                    )}
+                    className={clsx(
+                      "w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all",
+                      checked
+                        ? "border-[#7c8cf8]/40 bg-[#7c8cf8]/8"
+                        : "border-[#252540] bg-[#0a0a14] hover:border-[#3d3d5e]"
+                    )}
+                  >
+                    <span className={clsx(
+                      "w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center",
+                      checked ? "bg-[#7c8cf8] border-[#7c8cf8]" : "border-[#3d3d5e]"
+                    )}>
+                      {checked && <Check size={10} className="text-white" strokeWidth={3} />}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className={clsx("text-[13px] font-medium", checked ? "text-[#a5b4fc]" : "text-slate-400")}>
+                        {label}
+                      </p>
+                      <p className="text-[11px] text-slate-700">{desc}</p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Custom log paths */}
+          <div>
+            <p className="text-[12px] font-semibold text-slate-300 mb-1">Custom log files</p>
+            <p className="text-[11px] text-slate-600 mb-3">
+              Any file path the agent can read — tailed line-by-line and sent as <span className="font-mono text-slate-500">app_log</span>.
+            </p>
+            <div className="space-y-1.5 mb-2">
+              {cfgPaths.map((path, i) => (
+                <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#0a0a14] border border-[#252540]">
+                  <span className="flex-1 font-mono text-[12px] text-slate-400">{path}</span>
+                  <button
+                    onClick={() => setCfgPaths((prev) => prev.filter((_, j) => j !== i))}
+                    className="text-slate-700 hover:text-red-400 transition-colors flex-shrink-0"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={cfgNewPath}
+                onChange={(e) => setCfgNewPath(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && cfgNewPath.trim()) {
+                    setCfgPaths((prev) => [...prev, cfgNewPath.trim()]);
+                    setCfgNewPath("");
+                  }
+                }}
+                placeholder="/var/log/nginx/access.log"
+                className="flex-1 bg-[#0a0a14] border border-[#252540] rounded-lg px-3 py-2 text-[12px] font-mono text-slate-300 placeholder:text-slate-700 focus:outline-none focus:border-[#7c8cf8]/40"
+              />
+              <button
+                onClick={() => {
+                  if (cfgNewPath.trim()) {
+                    setCfgPaths((prev) => [...prev, cfgNewPath.trim()]);
+                    setCfgNewPath("");
+                  }
+                }}
+                className="px-3 py-2 rounded-lg bg-[#1e1e35] text-slate-400 hover:text-slate-200 border border-[#252540] transition-colors"
+              >
+                <Plus size={14} />
+              </button>
+            </div>
+          </div>
+
+          {/* Save */}
+          <button
+            onClick={() => configMutation.mutate()}
+            disabled={configMutation.isPending || cfgSources.length === 0}
+            className={clsx(
+              "w-full py-2.5 rounded-xl text-[13px] font-semibold transition-all",
+              cfgSaved
+                ? "bg-emerald-600/20 text-emerald-400 border border-emerald-600/30"
+                : "bg-[#7c8cf8] text-white hover:bg-[#6b7ce8] disabled:opacity-40 shadow-lg shadow-[#7c8cf8]/20"
+            )}
+          >
+            {configMutation.isPending
+              ? <span className="flex items-center justify-center gap-2"><Loader2 size={13} className="animate-spin" /> Saving…</span>
+              : cfgSaved
+              ? <span className="flex items-center justify-center gap-2"><CheckCircle2 size={13} /> Saved — agent will apply within 60 s</span>
+              : "Save configuration"}
+          </button>
+        </div>
       )}
     </div>
   );

@@ -229,6 +229,39 @@ async def get_node_logs(
     return NodeLogsOut(node_id=node_id, node_name=node.name, by_source=by_source, has_older=has_older)
 
 
+class NodeConfigIn(BaseModel):
+    sources: list[str] = []
+    custom_log_paths: list[str] = []
+
+
+@router.patch("/nodes/{node_id}/config")
+async def update_node_config(
+    node_id: str,
+    config: NodeConfigIn,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save agent config (sources, custom paths) into node metadata.
+    The agent picks this up on the next heartbeat and restarts to apply it."""
+    node_r = await db.execute(
+        select(Node).where(Node.id == node_id, Node.tenant_id == tenant.id)
+    )
+    node = node_r.scalar_one_or_none()
+    if node is None:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    meta = dict(node.metadata_ or {})
+    meta["agent_config"] = {
+        "sources": config.sources,
+        "custom_log_paths": config.custom_log_paths,
+        # Convenience field the agent reads directly as a comma-separated string
+        "sources_str": ",".join(s.strip() for s in config.sources if s.strip()),
+    }
+    node.metadata_ = meta
+    await db.commit()
+    return {"ok": True, "config": meta["agent_config"]}
+
+
 @router.delete("/nodes/{node_id}")
 async def delete_node(
     node_id: str,

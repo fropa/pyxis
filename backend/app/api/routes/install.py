@@ -10,6 +10,7 @@ Endpoints (no auth — these are public by design, the key is in the URL):
   GET /install/docker         → docker run one-liner (plain text)
   GET /install/shipper.py     → raw shipper script (fetched by install.sh)
 """
+import hashlib
 from pathlib import Path
 
 from fastapi import APIRouter, Query
@@ -54,6 +55,13 @@ export PYXIS_SOURCES="{sources}"
 @router.get("/shipper.py", response_class=PlainTextResponse)
 async def get_shipper():
     return PlainTextResponse(_read_agent_file("shipper.py"), media_type="text/x-python")
+
+
+@router.get("/shipper-version")
+async def shipper_version():
+    """SHA256 of current shipper.py — agent polls this to detect updates."""
+    content = _read_agent_file("shipper.py").encode()
+    return {"sha256": hashlib.sha256(content).hexdigest()}
 
 
 # ── Kubernetes manifest ───────────────────────────────────────────────────────

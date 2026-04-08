@@ -76,4 +76,5 @@ async def heartbeat(
             await db.commit()
 
     await record_heartbeat(tenant.id, node.id)
-    return {"ok": True, "node_id": node.id}
+    agent_config = (node.metadata_ or {}).get("agent_config", {})
+    return {"ok": True, "node_id": node.id, "config": agent_config}
