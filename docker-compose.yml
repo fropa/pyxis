@@ -7,8 +7,7 @@ services:
       POSTGRES_USER: pyxis
       POSTGRES_PASSWORD: pyxis
       POSTGRES_DB: pyxis
-    ports:
-      - "5432:5432"
+    # No ports: exposed — only backend/worker need it, via Docker internal network
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -19,8 +18,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # No ports: exposed — only backend/worker need it, via Docker internal network
     volumes:
       - redis_data:/data
     healthcheck:
@@ -34,7 +32,7 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"   # nginx on host proxies to this; not reachable from internet
     env_file:
       - ./backend/.env
     environment:
@@ -74,7 +72,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "5173:5173"
+      - "127.0.0.1:5173:5173"   # nginx on host proxies to this; not reachable from internet
     volumes:
       - ./frontend:/app
       - /app/node_modules
