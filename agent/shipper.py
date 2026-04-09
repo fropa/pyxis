@@ -691,6 +691,104 @@ def autoupdate_loop() -> None:
             log.warning("Auto-update check failed: %s", e)
 
 
+# ── Network connection reporter ───────────────────────────────────────────────
+
+CONNECTIONS_URL = f"{API_URL}/api/v1/connections/report"
+CONNECTIONS_INTERVAL = int(os.environ.get("PYXIS_CONNECTIONS_INTERVAL", "30"))
+
+
+def _parse_ss_connections() -> list[dict]:
+    """Run 'ss -tnp' and return established TCP connections as dicts."""
+    try:
+        result = subprocess.run(
+            ["ss", "-tnp"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        log.warning("ss not found — network connection reporting disabled")
+        return []
+    except Exception as e:
+        log.debug("ss error: %s", e)
+        return []
+
+    connections = []
+    for line in result.stdout.splitlines():
+        # ss -tnp output columns: State RecvQ SendQ LocalAddr:Port PeerAddr:Port [Process]
+        # Only care about ESTAB lines
+        if not line.startswith("ESTAB"):
+            continue
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        try:
+            local_addr = parts[3]   # 10.x.x.x:PORT
+            peer_addr  = parts[4]   # 10.x.x.x:PORT
+
+            local_port  = int(local_addr.rsplit(":", 1)[-1])
+            remote_ip   = peer_addr.rsplit(":", 1)[0]
+            remote_port = int(peer_addr.rsplit(":", 1)[-1])
+
+            # Skip loopback connections
+            if remote_ip.startswith("127.") or remote_ip == "::1":
+                continue
+
+            # Parse process name from "users:(("nginx",pid=1234,fd=3))"
+            process = ""
+            if len(parts) >= 6:
+                proc_field = parts[5]
+                if proc_field.startswith("users:"):
+                    try:
+                        process = proc_field.split('"')[1]
+                    except IndexError:
+                        pass
+
+            connections.append({
+                "remote_ip":   remote_ip,
+                "remote_port": remote_port,
+                "local_port":  local_port,
+                "process":     process,
+            })
+        except (ValueError, IndexError):
+            continue
+
+    return connections
+
+
+def network_connections_loop() -> None:
+    """Report established TCP connections to the backend every CONNECTIONS_INTERVAL seconds."""
+    log.info("Network connection reporter started (interval=%ds)", CONNECTIONS_INTERVAL)
+    while True:
+        time.sleep(CONNECTIONS_INTERVAL)
+        try:
+            conns = _parse_ss_connections()
+            if not conns:
+                continue
+
+            payload = json.dumps({
+                "node_name":   NODE_NAME,
+                "connections": conns,
+            }).encode()
+            req = urllib.request.Request(
+                CONNECTIONS_URL,
+                data=payload,
+                headers={"Content-Type": "application/json", "X-API-Key": API_KEY},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                if data.get("edges_created") or data.get("edges_updated"):
+                    log.info(
+                        "Connections: %d checked, %d edges created, %d updated",
+                        data.get("connections_checked", 0),
+                        data.get("edges_created", 0),
+                        data.get("edges_updated", 0),
+                    )
+        except urllib.error.URLError as e:
+            log.debug("Connections report: backend unreachable (%s)", e.reason)
+        except Exception as e:
+            log.debug("Connections report error: %s", e)
+
+
 # ── Kubernetes cluster monitor ────────────────────────────────────────────────
 
 K8S_STATE_URL = f"{API_URL}/api/v1/k8s/state"
@@ -796,7 +894,8 @@ def main() -> None:
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=exec_loop, daemon=True).start()
     threading.Thread(target=autoupdate_loop, daemon=True).start()
-    log.info("Remote exec + auto-update enabled")
+    threading.Thread(target=network_connections_loop, daemon=True).start()
+    log.info("Remote exec + auto-update + network connection reporter enabled")
 
     if "syslog" in sources:
         start_syslog_tailers()

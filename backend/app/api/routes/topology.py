@@ -41,6 +41,7 @@ class EdgeOut(BaseModel):
     confidence: float
     last_seen: datetime | None
     observation_count: int
+    metadata: dict[str, Any] = {}
 
     class Config:
         from_attributes = True
@@ -104,6 +105,7 @@ async def get_topology(
             confidence=e.confidence if e.confidence is not None else 0.7,
             last_seen=e.last_seen,
             observation_count=e.observation_count if e.observation_count is not None else 1,
+            metadata=e.metadata_ or {},
         ) for e in edges],
     )
 

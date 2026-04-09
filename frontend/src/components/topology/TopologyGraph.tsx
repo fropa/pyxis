@@ -63,11 +63,11 @@ const KIND_META: Record<string, { abbrev: string; label: string; bg: string; tex
 // ── Edge styling by kind ───────────────────────────────────────────────────────
 
 const EDGE_COLOR: Record<string, string> = {
-  calls:         "#6366f1",  // indigo — confirmed call chain
-  dependency:    "#d97706",  // amber — inferred dependency
-  "co-deployed": "#64748b",  // slate — deployment correlation
-  "co-occurrence": "#9333ea", // purple — incident co-occurrence
-  network:       "#94a3b8",  // default
+  calls:           "#6366f1",  // indigo — confirmed call chain
+  dependency:      "#d97706",  // amber — inferred dependency
+  "co-deployed":   "#64748b",  // slate — deployment correlation
+  "co-occurrence": "#9333ea",  // purple — incident co-occurrence
+  network:         "#14b8a6",  // teal — live TCP connection
 };
 
 // ── Custom node ────────────────────────────────────────────────────────────────
@@ -166,7 +166,15 @@ function buildFlowEdges(edges: Topology["edges"]): Edge[] {
     const opacity = 0.3 + confidence * 0.7;
     const strokeWidth = confidence >= 0.9 ? 2 : confidence >= 0.7 ? 1.5 : 1;
     const confPct = Math.round(confidence * 100);
-    const label = confidence < 0.95 ? `${e.kind} ${confPct}%` : e.kind;
+
+    // For network edges, show the top process:port instead of confidence
+    let label: string;
+    if (e.kind === "network") {
+      const processes = (e.metadata?.processes as string[] | undefined) ?? [];
+      label = processes.length > 0 ? processes[0] : "network";
+    } else {
+      label = confidence < 0.95 ? `${e.kind} ${confPct}%` : e.kind;
+    }
 
     return {
       id: e.id,

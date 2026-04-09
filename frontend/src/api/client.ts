@@ -52,6 +52,7 @@ export interface TopologyEdge {
   confidence: number;
   last_seen: string | null;
   observation_count: number;
+  metadata: Record<string, unknown>;
 }
 
 export interface Topology {

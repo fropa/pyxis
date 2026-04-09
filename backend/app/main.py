@@ -21,7 +21,7 @@ logging.basicConfig(
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
-from app.api.routes import ingest, topology, incidents, knowledge, ws, tenants, heartbeat, notifications, install, runbooks, deploy_events, analyze, traces, assistant, exec, k8s
+from app.api.routes import ingest, topology, incidents, knowledge, ws, tenants, heartbeat, notifications, install, runbooks, deploy_events, analyze, traces, assistant, exec, k8s, connections
 
 settings = get_settings()
 
@@ -90,6 +90,7 @@ app.include_router(traces.router,        prefix="/api/v1/traces",         tags=[
 app.include_router(assistant.router,     prefix="/api/v1/assistant",      tags=["assistant"])
 app.include_router(exec.router,          prefix="/api/v1/exec",           tags=["exec"])
 app.include_router(k8s.router,           prefix="/api/v1/k8s",            tags=["k8s"])
+app.include_router(connections.router,   prefix="/api/v1/connections",    tags=["connections"])
 
 
 @app.get("/health")
