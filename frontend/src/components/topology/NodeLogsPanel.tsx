@@ -496,7 +496,7 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
               <div className="flex flex-col items-center justify-center h-full text-center py-12 gap-3">
                 <TerminalSquare size={32} className="text-slate-800" />
                 <p className="text-[13px] text-slate-600">Connected to <span className="text-slate-400 font-mono">{node.name}</span></p>
-                <p className="text-[11px] text-slate-700">Type a command or pick one above</p>
+                <p className="text-[11px] text-slate-700">Read-only diagnostics only · runs as <span className="font-mono text-slate-600">pyxis</span> user</p>
                 <div className="flex gap-2 mt-1 text-[10px] text-slate-800">
                   <span>↑↓ history</span><span>·</span><span>Ctrl+L clear</span><span>·</span><span>Ctrl+C cancel</span>
                 </div>

@@ -331,7 +331,7 @@ export default function BroadcastConsole({ nodes, onClose }: Props) {
                     onChange={(e) => setCmd(e.target.value)}
                     onKeyDown={handleKeyDown}
                     disabled={running}
-                    placeholder={running ? "running…" : "command to broadcast"}
+                    placeholder={running ? "running…" : "diagnostic command (read-only)"}
                     className="flex-1 bg-transparent text-slate-200 font-mono text-[13px] outline-none placeholder:text-slate-700 disabled:opacity-50 caret-[#7c8cf8]"
                     autoFocus
                     autoComplete="off"

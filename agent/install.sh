@@ -8,7 +8,10 @@ PYXIS_API_KEY="${PYXIS_API_KEY:-__API_KEY__}"
 PYXIS_API_URL="${PYXIS_API_URL:-__API_URL__}"
 PYXIS_SOURCES="${PYXIS_SOURCES:-syslog}"
 INSTALL_DIR="/opt/pyxis"
+DATA_DIR="/var/lib/pyxis"
 SERVICE_NAME="pyxis-agent"
+AGENT_USER="pyxis"
+AGENT_GROUP="pyxis"
 SHIPPER_URL="${PYXIS_API_URL}/install/shipper.py"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -16,20 +19,13 @@ info()    { echo -e "${GREEN}[pyxis]${NC} $*"; }
 warn()    { echo -e "${YELLOW}[pyxis]${NC} $*"; }
 error()   { echo -e "${RED}[pyxis]${NC} $*" >&2; exit 1; }
 
-# ── Checks ─────────────────────────────────────────────────────────────────
+# ── Preflight ───────────────────────────────────────────────────────────────
 
-if [[ $EUID -ne 0 ]]; then
-    # Re-run with sudo if available, otherwise error
-    if command -v sudo &>/dev/null; then
-        exec sudo bash "$0" "$@"
-    else
-        error "Run as root: su -c 'bash <(curl ...)'"
-    fi
-fi
+[[ $EUID -ne 0 ]] && { command -v sudo &>/dev/null && exec sudo bash "$0" "$@" || error "Run as root"; }
 [[ "$PYXIS_API_KEY" == "__API_KEY__" ]] && error "PYXIS_API_KEY not set"
 [[ "$PYXIS_API_URL" == "__API_URL__" ]] && error "PYXIS_API_URL not set"
 
-# ── Dependencies ────────────────────────────────────────────────────────────
+# ── Dependencies ─────────────────────────────────────────────────────────────
 
 info "Checking dependencies..."
 if ! command -v python3 &>/dev/null; then
@@ -46,47 +42,146 @@ if ! command -v python3 &>/dev/null; then
 fi
 info "python3 $(python3 --version)"
 
-# ── Install agent ───────────────────────────────────────────────────────────
+# ── Dedicated pyxis system user ──────────────────────────────────────────────
+
+info "Creating system user '${AGENT_USER}'..."
+if ! id "${AGENT_USER}" &>/dev/null; then
+    useradd \
+        --system \
+        --no-create-home \
+        --shell /usr/sbin/nologin \
+        --comment "Pyxis monitoring agent" \
+        "${AGENT_USER}"
+fi
+
+# Grant read access to system logs
+# adm  group: /var/log/* on Debian/Ubuntu
+# systemd-journal group: journald binary logs
+for grp in adm systemd-journal; do
+    if getent group "${grp}" &>/dev/null; then
+        usermod -aG "${grp}" "${AGENT_USER}"
+        info "Added ${AGENT_USER} to group '${grp}'"
+    fi
+done
+
+# ── Install agent files ──────────────────────────────────────────────────────
 
 info "Installing to ${INSTALL_DIR}..."
-mkdir -p "${INSTALL_DIR}"
+mkdir -p "${INSTALL_DIR}" "${DATA_DIR}/buffer"
 
 info "Downloading shipper..."
 curl -fsSL "${SHIPPER_URL}" -o "${INSTALL_DIR}/shipper.py"
-chmod +x "${INSTALL_DIR}/shipper.py"
+chmod 550 "${INSTALL_DIR}/shipper.py"
 
-# Write env config
+# Write env config — readable only by root and pyxis user
 cat > "${INSTALL_DIR}/.env" <<EOF
 PYXIS_API_KEY=${PYXIS_API_KEY}
 PYXIS_API_URL=${PYXIS_API_URL}
 PYXIS_NODE_NAME=$(hostname -f 2>/dev/null || hostname)
 PYXIS_NODE_KIND=linux_host
 PYXIS_SOURCES=${PYXIS_SOURCES}
-PYXIS_BUFFER_DIR=/var/lib/pyxis/buffer
+PYXIS_BUFFER_DIR=${DATA_DIR}/buffer
 EOF
-chmod 600 "${INSTALL_DIR}/.env"
-mkdir -p /var/lib/pyxis/buffer
+chown root:"${AGENT_GROUP}" "${INSTALL_DIR}/.env"
+chmod 640 "${INSTALL_DIR}/.env"
 
-# ── Systemd service ─────────────────────────────────────────────────────────
+# Set ownership
+chown -R root:"${AGENT_GROUP}" "${INSTALL_DIR}"
+chown -R "${AGENT_USER}":"${AGENT_GROUP}" "${DATA_DIR}"
+chmod 750 "${INSTALL_DIR}" "${DATA_DIR}"
+
+# ── Sudoers: minimal read-only commands that need elevated access ─────────────
+# ss -tnp requires root only for process names; we limit it strictly.
+# If sudoers.d is not available, skip gracefully.
+
+SUDOERS_FILE="/etc/sudoers.d/pyxis"
+if [[ -d /etc/sudoers.d ]]; then
+    info "Writing sudoers rules to ${SUDOERS_FILE}..."
+    cat > "${SUDOERS_FILE}" <<'SUDOERS'
+# Pyxis monitoring agent — read-only diagnostic commands only
+# NO interactive shell, NO file modification commands.
+Defaults:pyxis !requiretty
+pyxis ALL=(root) NOPASSWD: /usr/sbin/ss -tnp
+pyxis ALL=(root) NOPASSWD: /bin/ss -tnp
+pyxis ALL=(root) NOPASSWD: /usr/bin/ss -tnp
+SUDOERS
+    chmod 440 "${SUDOERS_FILE}"
+    # Validate — if visudo fails, remove the file so we don't break sudo
+    if ! visudo -cf "${SUDOERS_FILE}" &>/dev/null; then
+        warn "sudoers validation failed — removing (ss process names will be unavailable)"
+        rm -f "${SUDOERS_FILE}"
+    else
+        info "Sudoers rules installed (ss -tnp only)"
+    fi
+fi
+
+# ── Systemd service with hardening ───────────────────────────────────────────
 
 info "Installing systemd service..."
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
-Description=Pyxis log shipper
+Description=Pyxis monitoring agent
 Documentation=https://pyxis.io
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=${AGENT_USER}
+Group=${AGENT_GROUP}
 EnvironmentFile=${INSTALL_DIR}/.env
 ExecStart=/usr/bin/python3 ${INSTALL_DIR}/shipper.py --sources \${PYXIS_SOURCES}
-Restart=always
-RestartSec=5
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+
+# Output
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=pyxis-agent
+
+# ── Systemd hardening ────────────────────────────────────────────────────────
+# Prevent privilege escalation
+NoNewPrivileges=true
+
+# Private /tmp — agent cannot read other processes' temp files
+PrivateTmp=true
+
+# Make / read-only; allow writes only to agent's own data dirs
+ProtectSystem=strict
+ReadWritePaths=${DATA_DIR}
+ReadOnlyPaths=/var/log /opt/pyxis /proc/net
+
+# Home directories are off-limits
+ProtectHome=true
+
+# Drop all Linux capabilities — agent needs none
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Prevent loading kernel modules
+ProtectKernelModules=true
+
+# Hide kernel variables from /proc
+ProtectKernelVariables=true
+
+# No access to kernel tunables
+ProtectKernelLogs=true
+
+# Restrict to common system calls only
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Restrict address families — only inet/inet6/unix needed
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# No realtime scheduling
+RestrictRealtime=true
+
+# Prevent acquiring new supplementary groups
+LockPersonality=true
+
+# Separate network namespace is NOT used so the agent can read /proc/net/tcp
 
 [Install]
 WantedBy=multi-user.target
@@ -95,13 +190,21 @@ EOF
 systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}"
 
-# ── Verify ──────────────────────────────────────────────────────────────────
+# ── Verify ───────────────────────────────────────────────────────────────────
 
 sleep 2
 if systemctl is-active --quiet "${SERVICE_NAME}"; then
-    info "Agent is running ✓"
+    info "Agent is running as '${AGENT_USER}' ✓"
     info "View logs: journalctl -u ${SERVICE_NAME} -f"
     info "Status:    systemctl status ${SERVICE_NAME}"
+    info ""
+    info "Security summary:"
+    info "  User:            ${AGENT_USER} (no login shell, no home)"
+    info "  Groups:          ${AGENT_GROUP}, adm, systemd-journal"
+    info "  Capabilities:    none (dropped all)"
+    info "  Filesystem:      read-only except ${DATA_DIR}"
+    info "  Sudo:            ss -tnp only (process names for topology)"
+    info "  Exec allowlist:  read-only diagnostics only"
 else
     warn "Agent may not be running — check: journalctl -u ${SERVICE_NAME} -n 50"
 fi

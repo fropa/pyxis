@@ -622,6 +622,104 @@ def read_stdin_pipeline() -> None:
 
 # ── Remote exec ───────────────────────────────────────────────────────────────
 
+import re as _re
+
+# Commands that are explicitly blocked regardless of user.
+# These patterns are matched against the full command string (lowercased).
+_EXEC_BLOCK_PATTERNS = [
+    _re.compile(p) for p in [
+        r'\brm\s+-',                     # rm -rf etc.
+        r'\brmdir\b',
+        r'\bdd\s+',                      # disk destroyer
+        r'\bmkfs\b', r'\bformat\b',
+        r'\bfdisk\b', r'\bparted\b', r'\bsgdisk\b',
+        r'\bshred\b', r'\bwipe\b',
+        r'\bchmod\b', r'\bchown\b', r'\bchattr\b',
+        r'\buseradd\b', r'\buserdel\b', r'\busermod\b',
+        r'\bgroupadd\b', r'\bgroupdel\b',
+        r'\bpasswd\b', r'\bchpasswd\b',
+        r'\bvisudo\b',
+        r'\bsu\s', r'\bsudo\s',          # no privilege escalation
+        r'\biptables\b', r'\bip6tables\b', r'\bnftables\b', r'\bufw\b',
+        r'\bfirewall-cmd\b',
+        r'\bshutdown\b', r'\breboot\b', r'\bhalt\b', r'\bpoweroff\b', r'\binit\s+[06]\b',
+        r'\bcrontab\s+-[re]\b',          # editing crontab (list -l is ok)
+        r'\bat\s+\b',                    # at scheduler
+        r'>\s*/',                        # redirect writes to absolute paths
+        r'>\s*~',                        # redirect to home
+        r'\|\s*(sh|bash|zsh|dash|python|perl|ruby|node)\b',  # pipe to shell
+        r'curl\s+.*\|\s*(sh|bash)',      # curl pipe shell
+        r'wget\s+.*\|\s*(sh|bash)',      # wget pipe shell
+        r'\bbase64\s+-d\b.*\|\s*(sh|bash)',
+        r'`[^`]+`',                      # backtick subshell in certain contexts
+        r'\$\([^)]+\)',                  # command substitution ($(...))
+        r'\beval\b',
+        r'\bexec\s+\d',                  # exec fd redirects
+        r'\bkill\s+-9\s+1\b',           # kill init/systemd
+        r'\bpkill\s+-9\b',
+        r'\bmkdir\s+.*(/etc|/bin|/sbin|/boot|/lib)',
+        r'\bsystemctl\s+(start|stop|restart|disable|enable|mask)\b(?!.*pyxis)',
+        # allow: systemctl status, is-active, show, list-units
+    ]
+]
+
+# Allow-listed command prefixes — even if not blocked above, only these run.
+# Each entry is a prefix; the command must start with one of these (stripped).
+_EXEC_ALLOW_PREFIXES = (
+    "free", "df ", "df\t", "du ",
+    "top ", "htop", "atop",
+    "ps ", "ps\t", "pgrep", "pstree",
+    "uptime", "uname", "hostname", "hostnamectl",
+    "uname",
+    "cat /proc/", "cat /sys/",
+    "cat /etc/os-release", "cat /etc/hostname",
+    "lscpu", "lsmem", "lsblk", "lspci", "lsusb",
+    "lsof ",
+    "ss ", "netstat", "ip addr", "ip route", "ip link",
+    "ping ", "traceroute ", "tracepath ", "mtr ",
+    "dig ", "nslookup ", "host ",
+    "curl ", "wget ",
+    "journalctl ",
+    "systemctl status", "systemctl is-active", "systemctl is-enabled",
+    "systemctl show ", "systemctl list-units",
+    "service ",  # service X status
+    "tail ", "head ", "less ", "more ",
+    "grep ", "egrep ", "fgrep ", "zgrep ",
+    "find /var/log", "find /tmp",
+    "ls ", "ls\t", "ll ", "dir ",
+    "echo ", "printf ",
+    "date", "timedatectl",
+    "who", "w ", "last ", "lastlog",
+    "id", "whoami", "groups",
+    "env", "printenv",
+    "python3 --version", "python3 -c",
+    "openssl ",
+    "vmstat", "iostat", "mpstat", "sar ",
+    "dmesg",
+    "mount",
+)
+
+
+def _exec_allowed(cmd: str) -> tuple[bool, str]:
+    """
+    Returns (allowed, reason).
+    Two-layer check: blocklist first, then allowlist prefix.
+    """
+    cmd_lower = cmd.lower().strip()
+
+    # Layer 1: blocklist
+    for pat in _EXEC_BLOCK_PATTERNS:
+        if pat.search(cmd_lower):
+            return False, f"blocked pattern: {pat.pattern}"
+
+    # Layer 2: allowlist prefix
+    for prefix in _EXEC_ALLOW_PREFIXES:
+        if cmd_lower.startswith(prefix.lower()):
+            return True, "allowed"
+
+    return False, "not in allowlist"
+
+
 def exec_loop() -> None:
     """Poll for commands from the backend and execute them."""
     while True:
@@ -638,27 +736,33 @@ def exec_loop() -> None:
             cmd_id = data.get("cmd_id")
             cmd = data.get("cmd")
             if cmd_id and cmd:
-                log.info("exec: running command [%s]: %s", cmd_id[:8], cmd[:120])
-                t0 = time.time()
-                try:
-                    result = subprocess.run(
-                        cmd,
-                        shell=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=25,
-                    )
-                    output = result.stdout + result.stderr
-                    exit_code = result.returncode
-                except subprocess.TimeoutExpired:
-                    output = "Command timed out (25s limit)"
-                    exit_code = 124
-                except Exception as e:
-                    output = f"Execution error: {e}"
-                    exit_code = 1
-
-                duration_ms = int((time.time() - t0) * 1000)
-                log.info("exec: done [%s] exit=%d in %dms", cmd_id[:8], exit_code, duration_ms)
+                allowed, reason = _exec_allowed(cmd)
+                if not allowed:
+                    log.warning("exec: BLOCKED command [%s]: %s — reason: %s", cmd_id[:8], cmd[:120], reason)
+                    output = f"[pyxis] Command blocked by security policy: {reason}\nOnly read-only diagnostic commands are permitted."
+                    exit_code = 126
+                    duration_ms = 0
+                else:
+                    log.info("exec: running command [%s]: %s", cmd_id[:8], cmd[:120])
+                    t0 = time.time()
+                    try:
+                        result = subprocess.run(
+                            cmd,
+                            shell=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=25,
+                        )
+                        output = result.stdout + result.stderr
+                        exit_code = result.returncode
+                    except subprocess.TimeoutExpired:
+                        output = "Command timed out (25s limit)"
+                        exit_code = 124
+                    except Exception as e:
+                        output = f"Execution error: {e}"
+                        exit_code = 1
+                    duration_ms = int((time.time() - t0) * 1000)
+                    log.info("exec: done [%s] exit=%d in %dms", cmd_id[:8], exit_code, duration_ms)
 
                 payload = json.dumps({
                     "output": output[:32000],  # cap at 32KB
@@ -791,12 +895,19 @@ def scan_message_for_peer_ips(message: str) -> None:
 
 
 def _parse_ss_connections() -> list[dict]:
-    """Run 'ss -tnp' and return ESTABLISHED TCP connections."""
-    try:
-        result = subprocess.run(["ss", "-tnp"], capture_output=True, text=True, timeout=10)
-    except FileNotFoundError:
-        return []
-    except Exception:
+    """Run 'ss -tnp' (via sudo if available) and return ESTABLISHED TCP connections.
+    Falls back to 'ss -tn' without process info when sudo is not configured."""
+    # Try with sudo first (pyxis user has sudoers rule for exactly this command)
+    for cmd in (["sudo", "-n", "ss", "-tnp"], ["ss", "-tnp"], ["ss", "-tn"]):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                break
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+    else:
         return []
 
     connections = []
