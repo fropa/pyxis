@@ -18,6 +18,29 @@ from app.models.event import LogEvent
 router = APIRouter()
 
 
+DEGRADED_THRESHOLD_SECONDS = 90
+SILENT_THRESHOLD_SECONDS = 180
+
+
+def _compute_status(node: Node) -> str:
+    """
+    Compute real-time effective status from last_heartbeat_at.
+    Only overrides stored status for agent-managed nodes (those that have ever sent a heartbeat).
+    Auto-discovered nodes without an agent retain their stored status.
+    """
+    if node.last_heartbeat_at is None:
+        return node.status  # no agent — trust stored value
+    lh = node.last_heartbeat_at
+    if lh.tzinfo is None:
+        lh = lh.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - lh).total_seconds()
+    if age >= SILENT_THRESHOLD_SECONDS:
+        return "down"
+    if age >= DEGRADED_THRESHOLD_SECONDS:
+        return "degraded"
+    return "healthy"
+
+
 class NodeOut(BaseModel):
     id: str
     external_id: str
@@ -26,6 +49,7 @@ class NodeOut(BaseModel):
     namespace: str | None
     cluster: str | None
     status: str
+    last_heartbeat_at: datetime | None = None
     labels: dict[str, Any]
     metadata: dict[str, Any]
 
@@ -93,7 +117,8 @@ async def get_topology(
             kind=n.kind,
             namespace=n.namespace,
             cluster=n.cluster,
-            status=n.status,
+            status=_compute_status(n),
+            last_heartbeat_at=n.last_heartbeat_at,
             labels=n.labels,
             metadata=n.metadata_,
         ) for n in nodes],

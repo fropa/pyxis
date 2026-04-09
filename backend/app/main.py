@@ -59,6 +59,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("ALTER TABLE log_events ADD COLUMN IF NOT EXISTS client_ip VARCHAR(45)"))
         await conn.execute(text("ALTER TABLE log_events ADD COLUMN IF NOT EXISTS upstream_addr VARCHAR(512)"))
         await conn.execute(text("ALTER TABLE log_events ADD COLUMN IF NOT EXISTS response_time_ms FLOAT"))
+        await conn.execute(text("ALTER TABLE incidents ADD COLUMN IF NOT EXISTS evidence_logs JSONB"))
+        await conn.execute(text("ALTER TABLE nodes ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ"))
 
     log.info("Startup: DB ready. Pyxis backend is up.")
     yield

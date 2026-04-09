@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tansta
 import ReactMarkdown from "react-markdown";
 import {
   X, FileCode, CheckCircle, Loader2, Link, BookOpen, ChevronDown, ChevronUp,
-  Copy, Check, ScrollText, Zap,
+  Copy, Check, ScrollText, Zap, FlaskConical,
 } from "lucide-react";
 import { api, getErrorMessage } from "../../api/client";
 import { useAppStore } from "../../store";
@@ -90,6 +90,61 @@ const SEVERITY_BAR: Record<string, string> = {
   medium:   "bg-warning",
   low:      "bg-text-3",
 };
+
+function EvidenceLogsSection({ evidence }: { evidence: Record<string, string[]> }) {
+  const [open, setOpen] = useState(false);
+  const [openSvc, setOpenSvc] = useState<string | null>(null);
+  const services = Object.keys(evidence);
+  const totalLines = services.reduce((n, s) => n + evidence[s].length, 0);
+
+  if (services.length === 0) return null;
+
+  return (
+    <div className="bg-raised border border-border rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface/50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <FlaskConical size={13} className="text-amber-400" />
+          <span className="text-[13px] font-semibold text-text-1">Log Evidence</span>
+          <span className="text-[11px] text-text-3">
+            {services.length} service{services.length !== 1 ? "s" : ""} · {totalLines} error/warn lines
+          </span>
+        </div>
+        {open ? <ChevronUp size={14} className="text-text-3" /> : <ChevronDown size={14} className="text-text-3" />}
+      </button>
+
+      {open && (
+        <div className="border-t border-border divide-y divide-border">
+          {services.map((svc) => (
+            <div key={svc}>
+              <button
+                onClick={() => setOpenSvc(openSvc === svc ? null : svc)}
+                className="w-full flex items-center justify-between px-4 py-2 hover:bg-surface/30 transition-colors text-left"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+                  <span className="text-[12px] font-medium text-text-2">{svc}</span>
+                  <span className="text-[11px] text-text-3">{evidence[svc].length} lines</span>
+                </div>
+                {openSvc === svc ? <ChevronUp size={12} className="text-text-4" /> : <ChevronDown size={12} className="text-text-4" />}
+              </button>
+              {openSvc === svc && (
+                <div className="relative group px-4 pb-3">
+                  <pre className="bg-[#0d0d0d] border border-[#1e1e1e] rounded-lg p-3 overflow-x-auto text-[11px] font-mono text-[#f87171] leading-relaxed max-h-60 overflow-y-auto">
+                    {evidence[svc].join("\n")}
+                  </pre>
+                  <CopyButton text={evidence[svc].join("\n")} />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function IncidentPanel() {
   const incidentId = useAppStore((s) => s.activeIncidentId);
@@ -291,6 +346,11 @@ export default function IncidentPanel() {
                   </div>
                 );
               })()}
+
+              {/* Log evidence */}
+              {incident.evidence_logs && Object.keys(incident.evidence_logs).length > 0 && (
+                <EvidenceLogsSection evidence={incident.evidence_logs} />
+              )}
 
               {/* RCA content */}
               <div className="prose-content max-w-none">

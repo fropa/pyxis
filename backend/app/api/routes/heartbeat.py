@@ -1,6 +1,6 @@
 """
 Heartbeat endpoint — called by agents every 60 seconds.
-Creates the node on first contact, then updates last_seen in Redis.
+Creates the node on first contact, then updates last_heartbeat_at in DB and Redis.
 """
 import uuid
 from datetime import datetime, timezone
@@ -39,6 +39,8 @@ async def heartbeat(
     )
     node = result.scalar_one_or_none()
 
+    now = datetime.now(timezone.utc)
+
     if node is None:
         # First contact — register the node automatically
         meta = {}
@@ -53,27 +55,25 @@ async def heartbeat(
             status="healthy",
             labels={},
             metadata_=meta,
+            last_heartbeat_at=now,
         )
         db.add(node)
         await db.commit()
         await db.refresh(node)
     else:
         meta = dict(node.metadata_ or {})
-        changed = False
-        # Restore if previously deleted — agent coming back online
+        # Restore if previously deleted or down — agent coming back online
         if node.deleted_at is not None:
             node.deleted_at = None
             node.status = "healthy"
-            changed = True
         if payload.ip_address and meta.get("ip_address") != payload.ip_address:
             meta["ip_address"] = payload.ip_address
             node.metadata_ = meta
-            changed = True
-        if node.status == "down":
+        if node.status in ("down", "degraded"):
             node.status = "healthy"
-            changed = True
-        if changed:
-            await db.commit()
+        # Always stamp last_heartbeat_at — this is the liveness source of truth
+        node.last_heartbeat_at = now
+        await db.commit()
 
     await record_heartbeat(tenant.id, node.id)
     agent_config = (node.metadata_ or {}).get("agent_config", {})

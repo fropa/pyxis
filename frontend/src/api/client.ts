@@ -40,6 +40,7 @@ export interface TopologyNode {
   namespace: string | null;
   cluster: string | null;
   status: "healthy" | "degraded" | "down" | "unknown";
+  last_heartbeat_at: string | null;
   labels: Record<string, string>;
   metadata: Record<string, unknown>;
 }
@@ -75,6 +76,7 @@ export interface Incident {
   postmortem: string | null;
   parent_incident_id: string | null;
   storm_size: number;
+  evidence_logs: Record<string, string[]> | null;
 }
 
 export interface KnowledgeSource {

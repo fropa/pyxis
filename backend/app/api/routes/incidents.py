@@ -36,6 +36,7 @@ class IncidentOut(BaseModel):
     postmortem: str | None = None
     parent_incident_id: str | None = None
     storm_size: int = 1
+    evidence_logs: dict[str, list[str]] | None = None
 
     class Config:
         from_attributes = True

@@ -31,6 +31,8 @@ async def auto_resolve_incidents() -> None:
             select(Incident).where(
                 Incident.status == "open",
                 Incident.started_at <= cutoff,
+                # node_silent incidents close when the node comes back, not by timeout
+                ~Incident.title.like("%node_silent%"),
             )
         )
         candidates = result.scalars().all()

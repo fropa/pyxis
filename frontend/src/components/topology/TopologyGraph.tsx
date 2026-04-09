@@ -70,6 +70,17 @@ const EDGE_COLOR: Record<string, string> = {
   network:         "#14b8a6",  // teal — live TCP connection
 };
 
+// ── Heartbeat age helper ───────────────────────────────────────────────────────
+
+function _ago(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
 // ── Custom node ────────────────────────────────────────────────────────────────
 
 interface NodeData {
@@ -133,6 +144,16 @@ const InfraNode = memo(({ data }: NodeProps<NodeData>) => {
         {node.metadata?.ip_address && (
           <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
             {node.metadata.ip_address}
+          </p>
+        )}
+        {node.last_heartbeat_at && (
+          <p className={clsx(
+            "text-[10px] mt-0.5 font-medium",
+            status === "down" ? "text-red-500" :
+            status === "degraded" ? "text-amber-500" :
+            "text-slate-400"
+          )}>
+            {status === "down" ? "⚠ " : ""}beat {_ago(node.last_heartbeat_at)}
           </p>
         )}
       </div>

@@ -158,32 +158,92 @@ async def _open_incident(event: LogEvent, tenant_id: str, db: AsyncSession) -> I
 
 # ── RCA via Claude + RAG + patterns ──────────────────────────────────────────
 
+async def _collect_evidence_logs(
+    incident: Incident, tenant_id: str, db: AsyncSession
+) -> dict[str, list[str]]:
+    """
+    Collect error/warning log lines from ALL services in a ±30-minute window
+    around the incident start. Returns {service_label: [raw log lines]}.
+    """
+    window_start = incident.started_at - timedelta(minutes=30)
+    window_end   = incident.started_at + timedelta(minutes=30)
+
+    from sqlalchemy import and_, or_
+    result = await db.execute(
+        select(LogEvent)
+        .where(
+            and_(
+                LogEvent.tenant_id == tenant_id,
+                LogEvent.event_ts >= window_start,
+                LogEvent.event_ts <= window_end,
+                or_(
+                    LogEvent.level.in_(["error", "critical", "fatal", "warn", "warning"]),
+                    LogEvent.is_anomaly.is_(True),
+                ),
+            )
+        )
+        .order_by(LogEvent.event_ts)
+        .limit(300)
+    )
+    events = result.scalars().all()
+
+    # Group by service: prefer node_name, fall back to source
+    evidence: dict[str, list[str]] = {}
+    for e in events:
+        label = e.node_name or e.source or "unknown"
+        line = f"[{e.event_ts.isoformat()}] [{e.level.upper()}] {e.message}"
+        evidence.setdefault(label, []).append(line)
+
+    # Cap each service to 30 lines (most recent = most relevant)
+    for svc in evidence:
+        evidence[svc] = evidence[svc][-30:]
+
+    return evidence
+
+
+def _format_evidence_for_prompt(evidence: dict[str, list[str]]) -> str:
+    if not evidence:
+        return "(no error/warning logs found in the ±30-minute window)"
+    parts = []
+    for svc, lines in sorted(evidence.items()):
+        parts.append(f"### {svc} ({len(lines)} error/warn entries)")
+        parts.append("```")
+        parts.extend(lines)
+        parts.append("```")
+    return "\n".join(parts)
+
+
 async def _run_rca(
     incident: Incident, trigger_event: LogEvent, tenant_id: str, db: AsyncSession
 ) -> None:
-    # 1. Recent events attached to this incident
+    # 1. Collect raw evidence: error/warn logs from ALL services in ±30min window
+    evidence = await _collect_evidence_logs(incident, tenant_id, db)
+    evidence_prompt = _format_evidence_for_prompt(evidence)
+
+    # 2. Also include events directly linked to this incident (may have info outside ±30min)
     result = await db.execute(
         select(LogEvent)
         .where(LogEvent.tenant_id == tenant_id, LogEvent.incident_id == incident.id)
         .order_by(desc(LogEvent.event_ts))
-        .limit(50)
+        .limit(20)
     )
-    related_events = result.scalars().all()
-    log_context = "\n".join(
+    linked_events = result.scalars().all()
+    linked_context = "\n".join(
         f"[{e.event_ts.isoformat()}] [{e.level.upper()}] [{e.source}] {e.message}"
-        for e in reversed(related_events)
+        for e in reversed(linked_events)
     )
+    log_context = linked_context  # kept for compatibility below
 
-    # 2. Cross-source correlation (pipeline ↔ K8s ↔ syslog)
+    # 3. Cross-source correlation (pipeline ↔ K8s ↔ syslog)
     correlation = await gather_correlated_context(trigger_event, tenant_id, db)
     cross_source_context = _format_correlation(correlation)
 
-    # 3. Known pattern hints (no IaC needed)
+    # 4. Known pattern hints (no IaC needed)
     pattern_context = build_pattern_context(
         trigger_event.message or "", trigger_event.fingerprint or ""
     )
 
-    # 4. RAG: customer IaC chunks (empty for starter tier — gracefully absent)
+    # 5. RAG: customer IaC chunks (empty for starter tier — gracefully absent)
     rag_query = f"{incident.title}\n{trigger_event.message}"
     chunks = await retrieve_relevant_chunks(rag_query, tenant_id, db)
     iac_context = ""
@@ -193,7 +253,7 @@ async def _run_rca(
             for c in chunks
         )
 
-    # 5. Past incidents for pattern memory
+    # 6. Past incidents for pattern memory
     past_result = await db.execute(
         select(Incident)
         .where(
@@ -213,13 +273,14 @@ async def _run_rca(
 
     log.info("_run_rca: calling Claude for incident %s (model=%s)", incident.id, settings.CLAUDE_MODEL)
 
-    # 6. Call Claude
+    # 7. Call Claude
     system_prompt = (
         "You are an expert SRE and DevOps engineer inside an infrastructure observability platform. "
         "Perform root cause analysis for the incident below. Be precise and specific. "
+        "You have been given RAW LOG LINES from every affected service — use them as your primary evidence. "
+        "Quote specific log lines when making claims (wrap in backticks). Do not speculate beyond what the logs show. "
         "If the diagnostic context includes specific checks, work through them. "
         "If IaC configuration is present, cite file paths. "
-        "If it's not, focus on the log evidence and known patterns. "
         "ALWAYS include a Diagnostic Commands section with real, runnable shell commands "
         "(kubectl, systemctl, journalctl, docker, curl, etc.) the on-call engineer should run first. "
         "Format your response as Markdown with clear sections."
@@ -231,9 +292,17 @@ async def _run_rca(
 **Started:** {incident.started_at.isoformat()}
 **Fingerprint:** {trigger_event.fingerprint}
 
-## Log Events
+## Raw Log Evidence (±30 min window, errors/warnings from ALL services)
+{evidence_prompt}
+
+## Trigger Event (what opened this incident)
 ```
-{log_context or "(no logs collected yet)"}
+[{trigger_event.event_ts.isoformat()}] [{trigger_event.level.upper()}] [{trigger_event.source}] {trigger_event.message}
+```
+
+## Other Linked Log Events
+```
+{log_context or "(none)"}
 ```
 
 ## Cross-Source Correlation (pipeline ↔ K8s ↔ syslog)
@@ -249,13 +318,18 @@ async def _run_rca(
 {past_context}
 
 ---
+Instructions:
+- Base ALL claims on specific log lines from the evidence above. Quote them.
+- If a service has no errors in the window, say so explicitly.
+- Do NOT fabricate log content or invent service states.
+
 Please provide:
-1. **Root Cause** — what specifically caused this, based on available evidence
-2. **Affected Components** — which services/nodes are impacted
+1. **Root Cause** — what specifically caused this, citing exact log lines as evidence
+2. **Affected Components** — which services show errors in the logs above
 3. **Diagnostic Commands** — exact shell commands to run RIGHT NOW to confirm and investigate (use code blocks)
 4. **Immediate Fix** — specific commands or steps to resolve
 5. **Prevention** — what to change to prevent recurrence
-6. **Confidence** — your confidence level (0–100%) and what would increase it"""
+6. **Confidence** — your confidence level (0–100%) and what evidence would increase it"""
 
     try:
         message = await _anthropic.messages.create(
@@ -292,6 +366,7 @@ Please provide:
     incident.rca_confidence = confidence
     incident.cited_knowledge = [c["file_path"] for c in chunks]
     incident.similar_incident_id = similar_id
+    incident.evidence_logs = evidence  # raw log lines grouped by service
     await db.commit()
 
     await publish_event(tenant_id, {

@@ -44,6 +44,9 @@ class Incident(Base):
     parent_incident_id: Mapped[str | None] = mapped_column(String, ForeignKey("incidents.id", ondelete="SET NULL"))
     storm_size: Mapped[int] = mapped_column(default=1)  # how many incidents in this storm
 
+    # Raw log evidence collected at RCA time — {service: [log_lines]}
+    evidence_logs: Mapped[dict | None] = mapped_column(JSON, default=None)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
