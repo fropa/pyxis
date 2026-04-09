@@ -282,3 +282,65 @@ async def delete_node(
     await db.commit()
 
     return {"ok": True, "node_id": node_id, "node_name": node.name}
+
+
+# ── Flow tracing ───────────────────────────────────────────────────────────────
+
+class FlowHop(BaseModel):
+    node: str
+    avg_ms: float
+
+class FlowChain(BaseModel):
+    hops: list[FlowHop]
+    count: int
+    confidence: float
+    source: str
+    sources: list[str] = []
+
+@router.get("/flows", response_model=list[FlowChain])
+async def get_flows(
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reconstruct request flow chains from log signals (request_id, upstream_addr, XFF, CF-Ray)."""
+    from app.tasks.flow_analysis import reconstruct_flows
+    return await reconstruct_flows(tenant.id, db)
+
+
+# ── Log verbosity analysis ─────────────────────────────────────────────────────
+
+class VerbosityDimensions(BaseModel):
+    has_ips: bool
+    has_request_ids: bool
+    has_timing: bool
+    has_upstream: bool
+    has_status_codes: bool
+    has_cf_ray: bool
+    has_error_context: bool
+
+class VerbosityRecommendation(BaseModel):
+    title: str
+    priority: str
+    config: str
+
+class VerbosityReport(BaseModel):
+    score: int
+    log_count: int
+    detected_service: str
+    dimensions: VerbosityDimensions
+    missing: list[str]
+    recommendations: list[VerbosityRecommendation]
+    analyzed_at: str
+
+@router.get("/nodes/{node_id}/verbosity", response_model=VerbosityReport)
+async def get_node_verbosity(
+    node_id: str,
+    tenant: Tenant = Depends(get_current_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    """Score log verbosity and return actionable config recommendations per service."""
+    from app.tasks.log_verbosity import analyze_node_verbosity
+    report = await analyze_node_verbosity(node_id, tenant.id, db)
+    if "error" in report:
+        raise HTTPException(status_code=404, detail=report["error"])
+    return report

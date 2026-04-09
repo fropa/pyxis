@@ -436,12 +436,55 @@ def tail_auth_journald() -> None:
         time.sleep(retry_delay)
 
 
+def _detect_source_from_path(path: str) -> str:
+    """Detect the log source type from the file path so the backend uses the right parser."""
+    p = path.lower()
+    if "nginx" in p:
+        return "nginx_access" if "access" in p else ("nginx_error" if "error" in p else "nginx_access")
+    if "apache" in p or "httpd" in p:
+        return "apache_access" if "access" in p else "apache_error"
+    if "haproxy" in p:
+        return "haproxy"
+    if "traefik" in p:
+        return "traefik"
+    if "caddy" in p:
+        return "caddy"
+    if "varnish" in p:
+        return "varnish"
+    if "envoy" in p:
+        return "envoy"
+    if "postgres" in p or "postgresql" in p or "pgsql" in p:
+        return "postgres"
+    if "mysql" in p or "mariadb" in p:
+        return "mysql_slow" if "slow" in p else "mysql_general"
+    if "mongodb" in p or "mongod" in p:
+        return "mongodb"
+    if "redis" in p:
+        return "redis"
+    if "elasticsearch" in p or "opensearch" in p:
+        return "elasticsearch"
+    if "rabbitmq" in p or "rabbit" in p:
+        return "rabbitmq"
+    if "kafka" in p:
+        return "kafka"
+    if "memcached" in p:
+        return "memcached"
+    if "php" in p and "fpm" in p:
+        return "php_fpm"
+    if "gunicorn" in p:
+        return "gunicorn"
+    if "uwsgi" in p:
+        return "uwsgi"
+    return "app_log"
+
+
 def tail_custom_file(path: str) -> None:
-    """Tail a custom log file path, sending entries as 'app_log' source."""
+    """Tail a custom log file path, auto-detecting source type from the path."""
     p = Path(path)
     if not p.exists():
         log.warning("Custom log path not found: %s — will retry when file appears", path)
-    log.info("Tailing custom log: %s", path)
+    source = _detect_source_from_path(path)
+    log.info("Tailing custom log: %s (source=%s)", path, source)
     retry_delay = 10
     while True:
         try:
@@ -459,7 +502,7 @@ def tail_custom_file(path: str) -> None:
                 line = line.rstrip()
                 if not line:
                     continue
-                enqueue(make_event("app_log", line, level=infer_level(line),
+                enqueue(make_event(source, line, level=infer_level(line),
                                    labels={"path": path}))
                 scan_message_for_peer_ips(line)
             proc.wait()

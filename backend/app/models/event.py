@@ -37,6 +37,13 @@ class LogEvent(Base):
     # Stable fingerprint — used for deduplication and rate windows
     fingerprint: Mapped[str | None] = mapped_column(String(512), index=True)
 
+    # Flow-signal fields — extracted from parsed log content for topology/flow tracing
+    request_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    trace_id: Mapped[str | None] = mapped_column(String(255), index=True)
+    client_ip: Mapped[str | None] = mapped_column(String(45))
+    upstream_addr: Mapped[str | None] = mapped_column(String(512))
+    response_time_ms: Mapped[float | None] = mapped_column()
+
     # Set by AI engine when it detects this event is interesting
     is_anomaly: Mapped[bool] = mapped_column(default=False)
     incident_id: Mapped[str | None] = mapped_column(String, ForeignKey("incidents.id", ondelete="SET NULL"))

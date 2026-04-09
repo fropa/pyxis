@@ -51,6 +51,14 @@ async def lifespan(app: FastAPI):
         await conn.execute(text("ALTER TABLE edges ADD COLUMN IF NOT EXISTS observation_count INTEGER DEFAULT 1"))
         await conn.execute(text("ALTER TABLE log_events ADD COLUMN IF NOT EXISTS node_name VARCHAR(255)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_log_events_node_name ON log_events (node_name)"))
+        # Flow signal columns
+        await conn.execute(text("ALTER TABLE log_events ADD COLUMN IF NOT EXISTS request_id VARCHAR(255)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_log_events_request_id ON log_events (request_id) WHERE request_id IS NOT NULL"))
+        await conn.execute(text("ALTER TABLE log_events ADD COLUMN IF NOT EXISTS trace_id VARCHAR(255)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_log_events_trace_id ON log_events (trace_id) WHERE trace_id IS NOT NULL"))
+        await conn.execute(text("ALTER TABLE log_events ADD COLUMN IF NOT EXISTS client_ip VARCHAR(45)"))
+        await conn.execute(text("ALTER TABLE log_events ADD COLUMN IF NOT EXISTS upstream_addr VARCHAR(512)"))
+        await conn.execute(text("ALTER TABLE log_events ADD COLUMN IF NOT EXISTS response_time_ms FLOAT"))
 
     log.info("Startup: DB ready. Pyxis backend is up.")
     yield

@@ -113,6 +113,8 @@ export const api = {
     deleteNode: (nodeId: string) => apiClient.delete(`/api/v1/topology/nodes/${nodeId}`).then((r) => r.data),
     updateNodeConfig: (nodeId: string, config: { sources: string[]; custom_log_paths: string[] }) =>
       apiClient.patch(`/api/v1/topology/nodes/${nodeId}/config`, config).then((r) => r.data),
+    flows: () => apiClient.get<FlowChain[]>("/api/v1/topology/flows").then((r) => r.data),
+    nodeVerbosity: (nodeId: string) => apiClient.get<VerbosityReport>(`/api/v1/topology/nodes/${nodeId}/verbosity`).then((r) => r.data),
   },
   exec: {
     run: (nodeId: string, cmd: string) =>
@@ -263,6 +265,35 @@ export interface TimeseriesPoint {
   avg_ms: number;
   request_count: number;
   error_count: number;
+}
+
+export interface FlowHop { node: string; avg_ms: number }
+export interface FlowChain {
+  hops: FlowHop[];
+  count: number;
+  confidence: number;
+  source: string;
+  sources: string[];
+}
+
+export interface VerbosityDimensions {
+  has_ips: boolean;
+  has_request_ids: boolean;
+  has_timing: boolean;
+  has_upstream: boolean;
+  has_status_codes: boolean;
+  has_cf_ray: boolean;
+  has_error_context: boolean;
+}
+export interface VerbosityRecommendation { title: string; priority: string; config: string }
+export interface VerbosityReport {
+  score: number;
+  log_count: number;
+  detected_service: string;
+  dimensions: VerbosityDimensions;
+  missing: string[];
+  recommendations: VerbosityRecommendation[];
+  analyzed_at: string;
 }
 
 export interface TraceOut {

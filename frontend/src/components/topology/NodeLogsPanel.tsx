@@ -4,8 +4,9 @@ import {
   Loader2, Terminal, ChevronDown, ChevronRight, Trash2,
   ScrollText, TerminalSquare, CheckCircle2, XCircle, Clock,
   Copy, Check, Eraser, Zap, ChevronUp, Filter, RefreshCw, Settings,
-  Plus, X,
+  Plus, X, BarChart2, AlertTriangle,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { api, getErrorMessage } from "../../api/client";
 import type { TopologyNode, NodeLogEntry } from "../../api/client";
 import clsx from "clsx";
@@ -58,7 +59,7 @@ interface HistoryEntry {
   ts: Date;
 }
 
-type Tab = "logs" | "console" | "config";
+type Tab = "logs" | "console" | "config" | "verbosity";
 
 const AVAILABLE_SOURCES = [
   { id: "syslog", label: "Syslog / journald",    desc: "All system events via journald" },
@@ -323,9 +324,10 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
       {/* ── Tabs ── */}
       <div className="flex border-b border-[#252540] flex-shrink-0 bg-[#111124]">
         {([
-          { id: "logs",    icon: <ScrollText size={12} />,    label: "Logs" },
-          { id: "console", icon: <TerminalSquare size={12} />, label: "Console" },
-          { id: "config",  icon: <Settings size={12} />,       label: "Config" },
+          { id: "logs",      icon: <ScrollText size={12} />,    label: "Logs" },
+          { id: "console",   icon: <TerminalSquare size={12} />, label: "Console" },
+          { id: "config",    icon: <Settings size={12} />,       label: "Config" },
+          { id: "verbosity", icon: <BarChart2 size={12} />,      label: "Verbosity" },
         ] as { id: Tab; icon: React.ReactNode; label: string }[]).map((t) => (
           <button key={t.id} onClick={() => setTab(t.id)}
             className={clsx(
@@ -703,6 +705,159 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
               ? <span className="flex items-center justify-center gap-2"><CheckCircle2 size={13} /> Saved — agent will apply within 60 s</span>
               : "Save configuration"}
           </button>
+        </div>
+      )}
+
+      {/* ── Verbosity tab ── */}
+      {tab === "verbosity" && (
+        <VerbosityTab nodeId={node.id} />
+      )}
+    </div>
+  );
+}
+
+// ── Verbosity tab component ────────────────────────────────────────────────────
+
+function VerbosityTab({ nodeId }: { nodeId: string }) {
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["node-verbosity", nodeId],
+    queryFn: () => api.topology.nodeVerbosity(nodeId),
+    staleTime: 60_000,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex-1 flex items-center justify-center gap-2 text-slate-500">
+        <Loader2 size={14} className="animate-spin" />
+        <span className="text-[13px]">Analyzing logs…</span>
+      </div>
+    );
+  }
+
+  if (isError || !data) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-[13px] text-red-400 gap-2">
+        <AlertTriangle size={14} /> Failed to analyze verbosity
+      </div>
+    );
+  }
+
+  const score = data.score;
+  const scoreColor = score >= 70 ? "#10b981" : score >= 40 ? "#f59e0b" : "#ef4444";
+  const scoreLabel = score >= 70 ? "Good" : score >= 40 ? "Needs improvement" : "Poor";
+
+  const DIM_LABEL: Record<string, string> = {
+    has_ips: "IP addresses",
+    has_request_ids: "Request / trace IDs",
+    has_timing: "Response timing",
+    has_upstream: "Upstream / backend info",
+    has_status_codes: "HTTP status codes",
+    has_cf_ray: "Cloudflare signals",
+    has_error_context: "Error context",
+  };
+
+  const PRIORITY_COLOR: Record<string, string> = {
+    high: "bg-red-500/20 text-red-300",
+    medium: "bg-amber-500/20 text-amber-300",
+    low: "bg-blue-500/20 text-blue-300",
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto p-5 space-y-5">
+      {/* Score + service */}
+      <div className="flex items-center gap-5">
+        <div className="relative w-20 h-20 flex-shrink-0">
+          <svg viewBox="0 0 36 36" className="rotate-[-90deg] w-full h-full">
+            <circle cx="18" cy="18" r="15.9" fill="none" stroke="#1e2533" strokeWidth="3" />
+            <circle cx="18" cy="18" r="15.9" fill="none" stroke={scoreColor} strokeWidth="3"
+              strokeDasharray={`${score} ${100 - score}`} strokeLinecap="round" />
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className="text-[16px] font-bold" style={{ color: scoreColor }}>{score}</span>
+            <span className="text-[9px] text-slate-500">/ 100</span>
+          </div>
+        </div>
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-[14px] font-semibold text-slate-100">{scoreLabel}</span>
+            <span className="text-[11px] bg-[#1e2533] text-slate-400 px-2 py-0.5 rounded-full capitalize">
+              {data.detected_service}
+            </span>
+          </div>
+          <p className="text-[12px] text-slate-500">
+            Analyzed {data.log_count} log events from last 24h
+          </p>
+          {data.missing.length > 0 && (
+            <p className="text-[12px] text-amber-400 mt-1">
+              Missing: {data.missing.join(", ")}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Dimension checklist */}
+      <div>
+        <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+          Signal coverage
+        </p>
+        <div className="grid grid-cols-2 gap-1">
+          {Object.entries(data.dimensions).map(([key, val]) => (
+            <div key={key} className="flex items-center gap-2 py-1">
+              {val
+                ? <CheckCircle2 size={12} className="text-emerald-400 flex-shrink-0" />
+                : <XCircle size={12} className="text-red-400/70 flex-shrink-0" />}
+              <span className={`text-[12px] ${val ? "text-slate-300" : "text-slate-500"}`}>
+                {DIM_LABEL[key] ?? key}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Recommendations */}
+      {data.recommendations.length > 0 && (
+        <div>
+          <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+            Recommendations
+          </p>
+          <div className="space-y-2">
+            {data.recommendations.map((rec, i) => (
+              <div key={i} className="border border-[#1e2533] rounded-lg overflow-hidden">
+                <button
+                  onClick={() => setExpanded(expanded === i ? null : i)}
+                  className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-[#1a1f2e] transition-colors"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded flex-shrink-0 ${PRIORITY_COLOR[rec.priority] ?? PRIORITY_COLOR.medium}`}>
+                      {rec.priority.toUpperCase()}
+                    </span>
+                    <span className="text-[12px] text-slate-200 truncate">{rec.title}</span>
+                  </div>
+                  {expanded === i
+                    ? <ChevronDown size={12} className="text-slate-500 flex-shrink-0" />
+                    : <ChevronRight size={12} className="text-slate-500 flex-shrink-0" />}
+                </button>
+                {expanded === i && (
+                  <div className="border-t border-[#1e2533] bg-[#0d1117] p-3 relative">
+                    <pre className="text-[11px] text-slate-300 whitespace-pre-wrap font-mono leading-relaxed overflow-x-auto">
+                      {rec.config}
+                    </pre>
+                    <CopyBtn text={rec.config} />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {data.recommendations.length === 0 && score >= 70 && (
+        <div className="flex items-center gap-2 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+          <CheckCircle2 size={14} className="text-emerald-400 flex-shrink-0" />
+          <p className="text-[12px] text-emerald-300">
+            Log verbosity looks good! Enough signal for flow tracing and root cause analysis.
+          </p>
         </div>
       )}
     </div>

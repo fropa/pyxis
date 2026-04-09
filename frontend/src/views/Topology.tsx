@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Network, RefreshCw, CheckCircle2, GitBranch, Zap } from "lucide-react";
+import { Network, RefreshCw, CheckCircle2, GitBranch, Zap, GitCommit } from "lucide-react";
 import TopologyGraph from "../components/topology/TopologyGraph";
 import NodeLogsPanel from "../components/topology/NodeLogsPanel";
 import BroadcastConsole from "../components/topology/BroadcastConsole";
+import FlowPanel from "../components/topology/FlowPanel";
 import AlertFeed from "../components/alerts/AlertFeed";
 import IncidentPanel from "../components/incidents/IncidentPanel";
 import { api, getErrorMessage } from "../api/client";
@@ -31,6 +32,7 @@ export default function TopologyView() {
   const [discoverResult, setDiscoverResult] = useState<{ edges_found: number; sources: string[] } | null>(null);
   const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null);
   const [showBroadcast, setShowBroadcast] = useState(false);
+  const [showFlows, setShowFlows] = useState(false);
 
   const { data: topology, isLoading, isError, error } = useQuery({
     queryKey: ["topology"],
@@ -99,6 +101,15 @@ export default function TopologyView() {
                 )}
               </div>
             )}
+
+            {/* Flows button */}
+            <button
+              onClick={() => setShowFlows((v) => !v)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium rounded-lg border transition-all ${showFlows ? "bg-[#14b8a6]/20 text-[#5eead4] border-[#14b8a6]/40" : "bg-[#0f2623] text-[#5eead4] border-[#14b8a6]/20 hover:bg-[#14b8a6]/10 hover:border-[#14b8a6]/40"}`}
+            >
+              <GitCommit size={11} />
+              Flows
+            </button>
 
             {/* Broadcast button */}
             {topology && topology.nodes.length > 0 && (
@@ -208,6 +219,7 @@ export default function TopologyView() {
       </div>
 
       <IncidentPanel />
+      {showFlows && <FlowPanel onClose={() => setShowFlows(false)} />}
       {selectedNode && (
         <NodeLogsPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
       )}

@@ -46,6 +46,12 @@ async def normalize_event(raw: "RawEvent", tenant_id: str, db: AsyncSession) -> 
         message=message,
         parsed=parsed,
         fingerprint=fp,
+        # Flow-signal fields extracted by the parser
+        request_id=parsed.get("request_id") or parsed.get("trace_id") or None,
+        trace_id=parsed.get("trace_id") or parsed.get("cf_ray") or None,
+        client_ip=parsed.get("client_ip") or None,
+        upstream_addr=parsed.get("upstream_addr") or None,
+        response_time_ms=parsed.get("response_time_ms") or parsed.get("request_time_ms") or parsed.get("duration_ms") or None,
     )
     db.add(log_event)
     await db.commit()
