@@ -26,6 +26,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -249,6 +250,7 @@ def heartbeat_loop() -> None:
             resp = _send_heartbeat()
             log.debug("Heartbeat sent → node_id=%s", resp.get("node_id"))
             _apply_config_if_changed(resp.get("config") or {})
+            update_known_node_ips(resp)
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 log.error(
@@ -347,6 +349,7 @@ def tail_journald() -> None:
                         level=level,
                         labels={"unit": unit},
                     ))
+                    scan_message_for_peer_ips(message)
                 except (json.JSONDecodeError, ValueError):
                     continue
             proc.wait()
@@ -373,6 +376,7 @@ def tail_syslog_file(path: str) -> None:
             if not line:
                 continue
             enqueue(make_event("syslog", line, level=infer_level(line)))
+            scan_message_for_peer_ips(line)
     except Exception as e:
         log.error("syslog tail error on %s: %s", path, e)
 
@@ -457,6 +461,7 @@ def tail_custom_file(path: str) -> None:
                     continue
                 enqueue(make_event("app_log", line, level=infer_level(line),
                                    labels={"path": path}))
+                scan_message_for_peer_ips(line)
             proc.wait()
             log.warning("tail on %s exited, restarting in %ds…", path, retry_delay)
         except Exception as e:
@@ -696,71 +701,244 @@ def autoupdate_loop() -> None:
 CONNECTIONS_URL = f"{API_URL}/api/v1/connections/report"
 CONNECTIONS_INTERVAL = int(os.environ.get("PYXIS_CONNECTIONS_INTERVAL", "30"))
 
+# Known peer node IPs — populated from heartbeat response, used for log scanning
+# Maps ip_address → node_name for all peer nodes reported by the backend
+_known_node_ips: dict[str, str] = {}
+_known_ips_lock = threading.Lock()
+
+# Log-detected connections — populated by log tailers, drained by network_connections_loop
+_log_detected: list[dict] = []
+_log_detected_lock = threading.Lock()
+
+# Regex to find IPv4 addresses in log lines
+_IP_RE = re.compile(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b")
+
+
+def update_known_node_ips(heartbeat_response: dict) -> None:
+    """Update the known peer IPs from a heartbeat response."""
+    global _known_node_ips
+    new_ips = heartbeat_response.get("known_ips") or {}
+    if new_ips:
+        with _known_ips_lock:
+            _known_node_ips = new_ips
+
+
+def scan_message_for_peer_ips(message: str) -> None:
+    """
+    Check a log message for any known peer node IPs.
+    If found, enqueue as a log-pattern-based connection evidence.
+    Called from the log tailers on every line.
+    """
+    with _known_ips_lock:
+        ips = dict(_known_node_ips)
+    if not ips:
+        return
+
+    found = _IP_RE.findall(message)
+    for ip in found:
+        if ip in ips and not ip.startswith("127."):
+            with _log_detected_lock:
+                _log_detected.append({
+                    "remote_ip":   ip,
+                    "remote_port": 0,
+                    "local_port":  0,
+                    "process":     "",
+                    "source":      "log_pattern",
+                })
+
 
 def _parse_ss_connections() -> list[dict]:
-    """Run 'ss -tnp' and return established TCP connections as dicts."""
+    """Run 'ss -tnp' and return ESTABLISHED TCP connections."""
     try:
-        result = subprocess.run(
-            ["ss", "-tnp"],
-            capture_output=True, text=True, timeout=10,
-        )
+        result = subprocess.run(["ss", "-tnp"], capture_output=True, text=True, timeout=10)
     except FileNotFoundError:
-        log.warning("ss not found — network connection reporting disabled")
         return []
-    except Exception as e:
-        log.debug("ss error: %s", e)
+    except Exception:
         return []
 
     connections = []
     for line in result.stdout.splitlines():
-        # ss -tnp output columns: State RecvQ SendQ LocalAddr:Port PeerAddr:Port [Process]
-        # Only care about ESTAB lines
         if not line.startswith("ESTAB"):
             continue
         parts = line.split()
         if len(parts) < 5:
             continue
         try:
-            local_addr = parts[3]   # 10.x.x.x:PORT
-            peer_addr  = parts[4]   # 10.x.x.x:PORT
-
+            local_addr  = parts[3]
+            peer_addr   = parts[4]
             local_port  = int(local_addr.rsplit(":", 1)[-1])
             remote_ip   = peer_addr.rsplit(":", 1)[0]
             remote_port = int(peer_addr.rsplit(":", 1)[-1])
-
-            # Skip loopback connections
             if remote_ip.startswith("127.") or remote_ip == "::1":
                 continue
-
-            # Parse process name from "users:(("nginx",pid=1234,fd=3))"
             process = ""
-            if len(parts) >= 6:
-                proc_field = parts[5]
-                if proc_field.startswith("users:"):
-                    try:
-                        process = proc_field.split('"')[1]
-                    except IndexError:
-                        pass
-
+            if len(parts) >= 6 and parts[5].startswith("users:"):
+                try:
+                    process = parts[5].split('"')[1]
+                except IndexError:
+                    pass
             connections.append({
-                "remote_ip":   remote_ip,
-                "remote_port": remote_port,
-                "local_port":  local_port,
-                "process":     process,
+                "remote_ip": remote_ip, "remote_port": remote_port,
+                "local_port": local_port, "process": process,
+                "source": "ss_established",
             })
         except (ValueError, IndexError):
             continue
+    return connections
+
+
+def _hex_to_ip(hex_addr: str) -> str:
+    """Convert little-endian hex address from /proc/net/tcp to dotted IPv4."""
+    try:
+        n = int(hex_addr, 16)
+        return f"{n & 0xff}.{(n >> 8) & 0xff}.{(n >> 16) & 0xff}.{(n >> 24) & 0xff}"
+    except ValueError:
+        return ""
+
+
+def _parse_proc_net_tcp() -> list[dict]:
+    """
+    Parse /proc/net/tcp (and tcp6) for ESTABLISHED + TIME_WAIT connections.
+    TIME_WAIT entries represent connections closed in the last ~2 minutes —
+    important for catching short-lived connections that ss misses.
+
+    State hex codes: 01=ESTABLISHED, 06=TIME_WAIT, 08=CLOSE_WAIT
+    """
+    STATE_SOURCE = {
+        "01": "proc_net_estab",
+        "06": "proc_net_timewait",
+        "08": "proc_net_timewait",  # CLOSE_WAIT also means recently active
+    }
+    connections = []
+
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path) as f:
+                lines = f.readlines()[1:]  # skip header
+        except OSError:
+            continue
+
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            try:
+                state_hex = parts[3]
+                if state_hex not in STATE_SOURCE:
+                    continue
+
+                rem_field = parts[2]  # hex "AABBCCDD:PPPP"
+                rem_hex_addr, rem_hex_port = rem_field.split(":")
+                remote_ip   = _hex_to_ip(rem_hex_addr)
+                remote_port = int(rem_hex_port, 16)
+
+                loc_field = parts[1]
+                _, loc_hex_port = loc_field.split(":")
+                local_port = int(loc_hex_port, 16)
+
+                if not remote_ip or remote_ip.startswith("0.0.0.0") or remote_ip.startswith("127."):
+                    continue
+
+                connections.append({
+                    "remote_ip": remote_ip, "remote_port": remote_port,
+                    "local_port": local_port, "process": "",
+                    "source": STATE_SOURCE[state_hex],
+                })
+            except (ValueError, IndexError):
+                continue
 
     return connections
 
 
+def _parse_arp_cache() -> list[dict]:
+    """
+    Read ARP cache — any IP in the table was communicated with recently on LAN.
+    Provides the widest net: catches UDP, ICMP, and even very brief TCP sessions.
+    """
+    try:
+        result = subprocess.run(["arp", "-n"], capture_output=True, text=True, timeout=5)
+    except FileNotFoundError:
+        try:
+            # Fallback: read kernel ARP table directly
+            with open("/proc/net/arp") as f:
+                lines = f.readlines()[1:]
+            connections = []
+            for line in lines:
+                parts = line.split()
+                if parts and not parts[0].startswith("127."):
+                    connections.append({
+                        "remote_ip": parts[0], "remote_port": 0,
+                        "local_port": 0, "process": "",
+                        "source": "arp",
+                    })
+            return connections
+        except Exception:
+            return []
+    except Exception:
+        return []
+
+    connections = []
+    for line in result.stdout.splitlines():
+        # arp -n: "Address HWtype HWaddress Flags Iface"
+        parts = line.split()
+        if len(parts) >= 3 and parts[1] != "HWtype":  # skip header
+            ip = parts[0]
+            if not ip.startswith("127.") and "." in ip:
+                connections.append({
+                    "remote_ip": ip, "remote_port": 0,
+                    "local_port": 0, "process": "",
+                    "source": "arp",
+                })
+    return connections
+
+
+def _collect_all_connections() -> list[dict]:
+    """
+    Combine all detection sources, deduplicating by (remote_ip, remote_port).
+    Higher-confidence sources win when the same endpoint is seen in multiple sources.
+    """
+    SOURCE_RANK = {
+        "ss_established": 5,
+        "proc_net_estab": 4,
+        "proc_net_timewait": 3,
+        "log_pattern": 2,
+        "arp": 1,
+    }
+
+    best: dict[tuple, dict] = {}  # (remote_ip, remote_port) → best entry
+
+    def _add(conns: list[dict]) -> None:
+        for c in conns:
+            key = (c["remote_ip"], c.get("remote_port", 0))
+            existing = best.get(key)
+            if existing is None or SOURCE_RANK.get(c["source"], 0) > SOURCE_RANK.get(existing["source"], 0):
+                best[key] = c
+
+    _add(_parse_ss_connections())
+    _add(_parse_proc_net_tcp())
+    _add(_parse_arp_cache())
+
+    # Drain log-detected connections (de-dup by IP only since port=0)
+    with _log_detected_lock:
+        log_conns = _log_detected[:]
+        _log_detected.clear()
+    _add(log_conns)
+
+    return list(best.values())
+
+
 def network_connections_loop() -> None:
-    """Report established TCP connections to the backend every CONNECTIONS_INTERVAL seconds."""
-    log.info("Network connection reporter started (interval=%ds)", CONNECTIONS_INTERVAL)
+    """
+    Collect TCP connections from multiple OS sources every CONNECTIONS_INTERVAL seconds
+    and report to the backend. Sources: ss (ESTAB), /proc/net/tcp (TIME_WAIT),
+    ARP cache, and log-line IP scanning.
+    """
+    log.info("Network connection reporter started (interval=%ds, sources: ss + /proc/net/tcp + arp + log-scan)",
+             CONNECTIONS_INTERVAL)
     while True:
         time.sleep(CONNECTIONS_INTERVAL)
         try:
-            conns = _parse_ss_connections()
+            conns = _collect_all_connections()
             if not conns:
                 continue
 
@@ -776,13 +954,11 @@ def network_connections_loop() -> None:
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read())
-                if data.get("edges_created") or data.get("edges_updated"):
-                    log.info(
-                        "Connections: %d checked, %d edges created, %d updated",
-                        data.get("connections_checked", 0),
-                        data.get("edges_created", 0),
-                        data.get("edges_updated", 0),
-                    )
+                created = data.get("edges_created", 0)
+                updated = data.get("edges_updated", 0)
+                if created or updated:
+                    log.info("Connections: %d checked → %d new edges, %d updated",
+                             data.get("connections_checked", 0), created, updated)
         except urllib.error.URLError as e:
             log.debug("Connections report: backend unreachable (%s)", e.reason)
         except Exception as e:
@@ -886,6 +1062,9 @@ def main() -> None:
         log.info("Node registered with backend (node_id=%s)", resp.get("node_id"))
         # Apply config from first heartbeat response
         _apply_config_if_changed(resp.get("config") or {})
+        update_known_node_ips(resp)
+        if resp.get("known_ips"):
+            log.info("Loaded %d known peer IPs for log scanning", len(resp["known_ips"]))
     except Exception as e:
         log.warning("Initial heartbeat failed (will retry via heartbeat loop): %s", e)
 

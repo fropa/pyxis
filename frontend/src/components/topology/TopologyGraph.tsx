@@ -167,11 +167,18 @@ function buildFlowEdges(edges: Topology["edges"]): Edge[] {
     const strokeWidth = confidence >= 0.9 ? 2 : confidence >= 0.7 ? 1.5 : 1;
     const confPct = Math.round(confidence * 100);
 
-    // For network edges, show the top process:port instead of confidence
+    // For network edges: show process:port if available, else detection sources
     let label: string;
     if (e.kind === "network") {
       const processes = (e.metadata?.processes as string[] | undefined) ?? [];
-      label = processes.length > 0 ? processes[0] : "network";
+      const detectionSources = (e.metadata?.sources as string[] | undefined) ?? [];
+      if (processes.length > 0 && processes[0] !== "arp" && processes[0] !== "log_pattern") {
+        label = processes[0];  // e.g. "nginx:443"
+      } else if (detectionSources.length > 0) {
+        label = detectionSources.join("+");  // e.g. "arp+log_pattern"
+      } else {
+        label = "network";
+      }
     } else {
       label = confidence < 0.95 ? `${e.kind} ${confPct}%` : e.kind;
     }

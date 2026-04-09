@@ -90,8 +90,11 @@ async def _discover_for_tenant(tenant_id: str, db: AsyncSession) -> dict:
     # ── 1. Span-based discovery ───────────────────────────────────────────────
     span_edges = await _discover_from_spans(tenant_id, since_1h, db)
 
-    # ── 2. Log-regex discovery ────────────────────────────────────────────────
+    # ── 2. Log-regex discovery (service name patterns) ────────────────────────
     raw_logs, log_edges = await _discover_from_logs(tenant_id, since_1h, db)
+
+    # ── 2b. Log IP-scan (known node IPs in log messages) ─────────────────────
+    ip_log_edges = await _discover_from_log_ips(tenant_id, since_1h, db)
 
     # ── 3. Co-deploy discovery ────────────────────────────────────────────────
     deploy_edges = await _discover_from_deploys(tenant_id, since_24h, db)
@@ -106,7 +109,7 @@ async def _discover_for_tenant(tenant_id: str, db: AsyncSession) -> dict:
 
     # ── Merge all edges (highest confidence wins per pair) ────────────────────
     all_edges: dict[tuple[str, str], DiscoveredEdge] = {}
-    for edge_list in [deploy_edges, incident_edges, log_edges, claude_edges, span_edges]:
+    for edge_list in [deploy_edges, incident_edges, log_edges, ip_log_edges, claude_edges, span_edges]:
         for e in edge_list:
             key = (e.src, e.dst)
             if key not in all_edges or e.confidence > all_edges[key].confidence:
@@ -132,6 +135,7 @@ async def _discover_for_tenant(tenant_id: str, db: AsyncSession) -> dict:
     sources_used = []
     if span_edges:     sources_used.append("spans")
     if log_edges:      sources_used.append("logs")
+    if ip_log_edges:   sources_used.append("log_ips")
     if deploy_edges:   sources_used.append("deploys")
     if incident_edges: sources_used.append("incidents")
     if claude_edges:   sources_used.append("claude")
@@ -224,6 +228,66 @@ async def _discover_from_logs(
                         edges.append(DiscoveredEdge(src, target, "dependency", CONF_LOG))
 
     return raw_messages[:100], edges  # cap raw messages sent to Claude
+
+
+_IP_RE = re.compile(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b")
+
+
+async def _discover_from_log_ips(
+    tenant_id: str, since: datetime, db: AsyncSession
+) -> list[DiscoveredEdge]:
+    """
+    Scan stored log messages for known node IP addresses.
+    If node A's logs contain node B's IP, node A communicates with node B.
+    This catches connections that ss/proc/arp all missed (e.g. very brief sessions,
+    connections that happened before the agent started, or custom app logs).
+    """
+    # Get all nodes with known IPs for this tenant
+    node_r = await db.execute(
+        select(Node).where(Node.tenant_id == tenant_id, Node.deleted_at.is_(None))
+    )
+    nodes = node_r.scalars().all()
+
+    # Build ip → node_name map (excluding nodes without IPs)
+    ip_to_name: dict[str, str] = {}
+    for n in nodes:
+        ip = (n.metadata_ or {}).get("ip_address")
+        if ip:
+            ip_to_name[ip] = n.external_id
+
+    if not ip_to_name:
+        return []
+
+    # Fetch recent logs that contain IP-like strings
+    log_r = await db.execute(
+        select(LogEvent.node_name, LogEvent.message)
+        .where(
+            LogEvent.tenant_id == tenant_id,
+            LogEvent.event_ts >= since,
+            LogEvent.message.isnot(None),
+            LogEvent.node_name.isnot(None),
+        )
+        .limit(2000)
+    )
+    rows = log_r.all()
+
+    seen: set[tuple[str, str]] = set()
+    edges = []
+    for row in rows:
+        if not row.message or not row.node_name:
+            continue
+        # Quick pre-filter: skip lines without any digit patterns to avoid regex on every line
+        if "." not in row.message:
+            continue
+        for ip in _IP_RE.findall(row.message):
+            peer_name = ip_to_name.get(ip)
+            if peer_name and peer_name != row.node_name:
+                pair = (row.node_name, peer_name)
+                if pair not in seen:
+                    seen.add(pair)
+                    edges.append(DiscoveredEdge(row.node_name, peer_name, "network", CONF_LOG))
+
+    return edges
 
 
 async def _discover_from_deploys(

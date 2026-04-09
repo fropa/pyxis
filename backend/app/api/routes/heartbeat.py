@@ -77,4 +77,15 @@ async def heartbeat(
 
     await record_heartbeat(tenant.id, node.id)
     agent_config = (node.metadata_ or {}).get("agent_config", {})
-    return {"ok": True, "node_id": node.id, "config": agent_config}
+
+    # Send all known node IPs so the agent can scan logs for them
+    all_nodes_r = await db.execute(
+        select(Node).where(Node.tenant_id == tenant.id, Node.deleted_at.is_(None))
+    )
+    known_ips: dict[str, str] = {}  # ip → node_name
+    for n in all_nodes_r.scalars().all():
+        ip = (n.metadata_ or {}).get("ip_address")
+        if ip and n.id != node.id:  # exclude self
+            known_ips[ip] = n.external_id
+
+    return {"ok": True, "node_id": node.id, "config": agent_config, "known_ips": known_ips}
