@@ -58,26 +58,37 @@ _SERVICE_SRC_MAP = {
     "memcached": "memcached",
     "php_fpm": "php_fpm",
     "gunicorn": "gunicorn", "uwsgi": "gunicorn",
+    # System log sources — detected directly, skip content-pattern guessing
+    "syslog": "linux_host",
+    "journald": "linux_host",
+    "auth": "linux_host",
+    "kern": "linux_host",
+    "daemon": "linux_host",
+    "cron": "linux_host",
 }
 
 _SERVICE_CONTENT_PATTERNS = {
-    "nginx":   re.compile(r'nginx|\bupstream\b|" \d{3} \d+\s+"', re.I),
-    "apache":  re.compile(r'apache|httpd|mod_|AH\d{5}', re.I),
-    "haproxy": re.compile(r'haproxy|frontend|backend.*ELOG|termination_state', re.I),
-    "traefik": re.compile(r'traefik|RouterName|entryPoints', re.I),
-    "envoy":   re.compile(r'envoy|downstream_remote|upstream_host|upstream_cluster', re.I),
-    "caddy":   re.compile(r'caddy|RequestHost|ResponseSize', re.I),
-    "varnish": re.compile(r'varnish|VCL|bereq|beresp', re.I),
-    "postgres": re.compile(r'postgres|LOG:\s+duration|statement:|FATAL.*database', re.I),
-    "mysql":   re.compile(r'mysql|innodb|Query_time|InnoDB', re.I),
-    "mongodb": re.compile(r'mongod|QUERY|WRITE|COMMAND|ns:.*\.|planSummary', re.I),
-    "redis":   re.compile(r'\d+:[MSCX]\s+\d+\s+\w+\s+\d{2}:\d{2}:\d{2}|AOF|RDB|SAVE', re.I),
-    "elasticsearch": re.compile(r'elasticsearch|opensearch|took\[|msearch|\.kibana', re.I),
-    "rabbitmq": re.compile(r'rabbitmq|amqp|vhost|channel|exchange|queue', re.I),
-    "kafka":   re.compile(r'kafka|KafkaServer|Log partition|__consumer_offsets', re.I),
-    "memcached": re.compile(r'memcached|slab|eviction|cas_misses', re.I),
-    "php_fpm": re.compile(r'php-fpm|PHP|fpm.pool|NOTICE.*fpm', re.I),
-    "gunicorn": re.compile(r'gunicorn|uvicorn|uwsgi|\[pid\s+\d+\].*\d{3}\s+\d+', re.I),
+    # Require service-specific tokens — avoid generic words that appear in syslog
+    "nginx":   re.compile(r'\bnginx\b|" \d{3} \d+ "', re.I),
+    "apache":  re.compile(r'\bapache\b|\bhttpd\b|mod_\w+|AH\d{5}', re.I),
+    "haproxy": re.compile(r'\bhaproxy\b|termination_state|frontend\s+\w+.*backend', re.I),
+    "traefik": re.compile(r'\btraefik\b|RouterName|entryPoints', re.I),
+    "envoy":   re.compile(r'\benvoy\b|downstream_remote_address|upstream_cluster', re.I),
+    "caddy":   re.compile(r'\bcaddy\b|RequestHost.*ResponseSize', re.I),
+    "varnish": re.compile(r'\bvarnish\b|VCL_call|bereq\.|beresp\.', re.I),
+    "postgres": re.compile(r'\bpostgres\b|LOG:\s+duration:|LOG:\s+statement:|FATAL.*database', re.I),
+    # mysql: require mysql-specific tokens, not just "innodb" (too generic)
+    "mysql":   re.compile(r'\bmysql\b|Query_time:\s+\d|InnoDB:', re.I),
+    # mongodb: require mongod binary name or structured log fields — NOT bare COMMAND/QUERY/WRITE
+    "mongodb": re.compile(r'\bmongod\b|planSummary|"c":"COMMAND"|ns:\w+\.\w+\s+command:', re.I),
+    # redis: require the specific redis log line format with role char
+    "redis":   re.compile(r'\d+:[MSCX]\s+\d+\s+\w{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}|Accepted\s+\d+\.\d+\.\d+\.\d+.*:6379|AOF rewrite|RDB\s+saved', re.I),
+    "elasticsearch": re.compile(r'\belasticsearch\b|\bopensearch\b|took\[\d+ms\]|\.kibana', re.I),
+    "rabbitmq": re.compile(r'\brabbitmq\b|\bamqp\b|vhost=|exchange=\w', re.I),
+    "kafka":   re.compile(r'\bkafka\b|KafkaServer|__consumer_offsets', re.I),
+    "memcached": re.compile(r'\bmemcached\b|slab_reassign|cas_misses', re.I),
+    "php_fpm": re.compile(r'php-fpm|fpm\.pool\[|NOTICE\s+fpm', re.I),
+    "gunicorn": re.compile(r'\bgunicorn\b|\buvicorn\b|\buwsgi\b', re.I),
 }
 
 
@@ -537,18 +548,31 @@ async def analyze_node_verbosity(node_id: str, tenant_id: str, db: AsyncSession)
     sources = {r.source for r in rows}
 
     # Detect service type
+    # Priority: specific service source tag > content pattern > system source tag > generic
+    _SYSTEM_SOURCES = {"syslog", "journald", "auth", "kern", "daemon", "cron"}
     detected_service = "application"
-    # Check source tags first
+    system_fallback: str | None = None
+
     for src in sources:
-        if src in _SERVICE_SRC_MAP:
-            detected_service = _SERVICE_SRC_MAP[src]
-            break
-    # Then check content
+        mapped = _SERVICE_SRC_MAP.get(src)
+        if mapped is None:
+            continue
+        if mapped == "linux_host":
+            system_fallback = "linux_host"  # remember but keep looking for a real service
+        else:
+            detected_service = mapped
+            break  # specific service wins immediately
+
+    # Content patterns (only if no specific source tag matched)
     if detected_service == "application":
         for svc, pat in _SERVICE_CONTENT_PATTERNS.items():
             if pat.search(full_text):
                 detected_service = svc
                 break
+
+    # Fall back to linux_host if all sources were system logs
+    if detected_service == "application" and system_fallback:
+        detected_service = system_fallback
 
     # Score each dimension
     has_ips          = bool(_IP_RE.search(full_text)) or any(r.client_ip for r in rows)
