@@ -96,9 +96,11 @@ else
 fi
 
 # ── 4. Clone or update repo ────────────────────────────────────────────────────
-if [ -d "$DIR" ]; then
+if [ -d "$DIR/.git" ]; then
     info "Updating Pyxis..."
-    cd "$DIR" && sudo git pull --quiet
+    cd "$DIR"
+    sudo git fetch --quiet origin
+    sudo git reset --hard origin/main --quiet  # restore any deleted tracked files
 else
     info "Cloning Pyxis into $DIR..."
     sudo git clone --quiet "$REPO" "$DIR"
@@ -107,7 +109,15 @@ fi
 
 # ── 5. Configure environment ───────────────────────────────────────────────────
 if [ ! -f backend/.env ]; then
-    cp backend/.env.example backend/.env
+    info "Creating default backend/.env..."
+    SECRET=$(openssl rand -hex 16 2>/dev/null || cat /proc/sys/kernel/random/uuid | tr -d '-')
+    sudo tee backend/.env > /dev/null <<EOF
+DATABASE_URL=postgresql+asyncpg://pyxis:pyxis@postgres:5432/pyxis
+REDIS_URL=redis://redis:6379
+ANTHROPIC_API_KEY=sk-ant-...
+SECRET_KEY=${SECRET}
+DEBUG=false
+EOF
 fi
 
 # ── 6. Start the stack ─────────────────────────────────────────────────────────
