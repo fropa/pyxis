@@ -39,11 +39,42 @@ export interface TopologyNode {
   kind: string;
   namespace: string | null;
   cluster: string | null;
-  status: "healthy" | "degraded" | "down" | "unknown";
+  status: "healthy" | "degraded" | "down" | "unknown" | "critical";
   last_heartbeat_at: string | null;
+  health_score: number | null;
+  health_components: Record<string, number>;
   labels: Record<string, string>;
   metadata: Record<string, unknown>;
 }
+
+export interface HealthMetrics {
+  cpu_count: number;
+  cpu_used_pct: number;
+  load_avg_1m: number;
+  load_avg_5m: number;
+  load_avg_15m: number;
+  iowait_pct: number;
+  mem_total_mb: number;
+  mem_available_mb: number;
+  mem_used_mb: number;
+  mem_used_pct: number;
+  swap_total_mb: number;
+  swap_used_mb: number;
+  swap_used_pct: number;
+  disk_mounts: { mount: string; device: string; used_pct: number; free_gb: number; inode_used_pct: number }[];
+  fd_open: number;
+  fd_max: number;
+  fd_used_pct: number;
+  tcp_established: number;
+  tcp_time_wait: number;
+  tcp_somaxconn: number;
+  process_count: number;
+  process_max: number;
+  process_used_pct: number;
+  uptime_seconds: number;
+}
+
+export interface HealthHistoryPoint { ts: number; score: number; }
 
 export interface TopologyEdge {
   id: string;
@@ -192,6 +223,10 @@ export const api = {
   assistant: {
     chat: (payload: { question: string; history: { role: string; content: string }[] }) =>
       apiClient.post<{ answer: string }>("/api/v1/assistant/chat", payload).then((r) => r.data),
+  },
+  metrics: {
+    history: (nodeId: string) =>
+      apiClient.get<HealthHistoryPoint[]>(`/api/v1/metrics/history/${nodeId}`).then((r) => r.data),
   },
 };
 

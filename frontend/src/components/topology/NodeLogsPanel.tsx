@@ -4,7 +4,7 @@ import {
   Loader2, Terminal, ChevronDown, ChevronRight, Trash2,
   ScrollText, TerminalSquare, CheckCircle2, XCircle, Clock,
   Copy, Check, Eraser, Zap, ChevronUp, Filter, RefreshCw, Settings,
-  Plus, X, BarChart2, AlertTriangle,
+  Plus, X, BarChart2, AlertTriangle, HeartPulse,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { api, getErrorMessage } from "../../api/client";
@@ -59,7 +59,7 @@ interface HistoryEntry {
   ts: Date;
 }
 
-type Tab = "logs" | "console" | "config" | "verbosity";
+type Tab = "logs" | "console" | "config" | "verbosity" | "health";
 
 const AVAILABLE_SOURCES = [
   { id: "syslog", label: "Syslog / journald",    desc: "All system events via journald" },
@@ -326,6 +326,7 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
         {([
           { id: "logs",      icon: <ScrollText size={12} />,    label: "Logs" },
           { id: "console",   icon: <TerminalSquare size={12} />, label: "Console" },
+          { id: "health",    icon: <HeartPulse size={12} />,     label: "Health" },
           { id: "config",    icon: <Settings size={12} />,       label: "Config" },
           { id: "verbosity", icon: <BarChart2 size={12} />,      label: "Verbosity" },
         ] as { id: Tab; icon: React.ReactNode; label: string }[]).map((t) => (
@@ -708,7 +709,12 @@ export default function NodeLogsPanel({ node, onClose }: Props) {
         </div>
       )}
 
-      {/* ── Verbosity tab ── */}
+      {/* ── Health tab ── */}
+      {tab === "health" && (
+        <HealthTab node={node} />
+      )}
+
+{/* ── Verbosity tab ── */}
       {tab === "verbosity" && (
         <VerbosityTab nodeId={node.id} />
       )}
@@ -877,4 +883,196 @@ function dedupe(logs: NodeLogEntry[]): NodeLogEntry[] {
     seen.add(l.id);
     return true;
   }).sort((a, b) => a.ts < b.ts ? -1 : 1);
+}
+
+// ── Health tab component ───────────────────────────────────────────────────────
+
+function Gauge({ label, value, max = 100, unit = "%", warn = 75, danger = 90 }: {
+  label: string; value: number | undefined; max?: number; unit?: string; warn?: number; danger?: number;
+}) {
+  if (value == null) return null;
+  const pct = Math.min(100, (value / max) * 100);
+  const color = pct >= danger ? "bg-red-500" : pct >= warn ? "bg-amber-500" : "bg-emerald-500";
+  const textColor = pct >= danger ? "text-red-400" : pct >= warn ? "text-amber-400" : "text-emerald-400";
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between items-baseline">
+        <span className="text-[11px] text-slate-400">{label}</span>
+        <span className={clsx("text-[12px] font-bold tabular-nums", textColor)}>
+          {typeof value === "number" ? value.toFixed(value < 10 ? 1 : 0) : value}{unit}
+        </span>
+      </div>
+      <div className="h-1.5 bg-[#1e2533] rounded-full overflow-hidden">
+        <div className={clsx("h-full rounded-full transition-all duration-500", color)} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function ScoreRing({ score }: { score: number }) {
+  const r = 28; const circ = 2 * Math.PI * r;
+  const dash = circ * (score / 100);
+  const color = score >= 80 ? "#10b981" : score >= 50 ? "#f59e0b" : "#ef4444";
+  const label = score >= 80 ? "Healthy" : score >= 50 ? "Degraded" : "Critical";
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <svg width="72" height="72" viewBox="0 0 72 72">
+        <circle cx="36" cy="36" r={r} fill="none" stroke="#1e2533" strokeWidth="6" />
+        <circle cx="36" cy="36" r={r} fill="none" stroke={color} strokeWidth="6"
+          strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
+          transform="rotate(-90 36 36)" style={{ transition: "stroke-dasharray 0.6s ease" }} />
+        <text x="36" y="40" textAnchor="middle" fontSize="16" fontWeight="700" fill={color}>{score}</text>
+      </svg>
+      <span className="text-[11px] font-semibold" style={{ color }}>{label}</span>
+    </div>
+  );
+}
+
+function Sparkline({ points }: { points: { ts: number; score: number }[] }) {
+  if (points.length < 2) return null;
+  const W = 200; const H = 36;
+  const scores = points.map(p => p.score);
+  const minS = Math.min(...scores); const maxS = Math.max(...scores);
+  const range = maxS - minS || 1;
+  const xs = points.map((_, i) => (i / (points.length - 1)) * W);
+  const ys = points.map(p => H - ((p.score - minS) / range) * (H - 4) - 2);
+  const d = xs.map((x, i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${ys[i].toFixed(1)}`).join(" ");
+  const last = scores[scores.length - 1];
+  const color = last >= 80 ? "#10b981" : last >= 50 ? "#f59e0b" : "#ef4444";
+  return (
+    <svg width={W} height={H} className="w-full">
+      <path d={d} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function HealthTab({ node }: { node: TopologyNode }) {
+  const { data: history } = useQuery({
+    queryKey: ["metrics-history", node.id],
+    queryFn: () => api.metrics.history(node.id),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+
+  const m = (node.metadata as Record<string, unknown>)?.health as Record<string, unknown> | undefined;
+  const metrics = m?.metrics as Record<string, unknown> | undefined;
+  const score = node.health_score;
+  const components = node.health_components ?? {};
+
+  const noData = score == null;
+
+  const COMP_LABEL: Record<string, string> = {
+    cpu: "CPU", memory: "Memory", disk: "Disk",
+    io: "I/O Wait", file_descriptors: "File Descriptors", processes: "Processes",
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4 space-y-5">
+      {noData ? (
+        <div className="flex flex-col items-center justify-center h-48 gap-3 text-center">
+          <HeartPulse size={28} className="text-slate-700" />
+          <p className="text-[13px] text-slate-500">No health metrics yet</p>
+          <p className="text-[11px] text-slate-700 max-w-xs">
+            The agent reports metrics every 60 s. If you just installed it, wait a minute.
+          </p>
+        </div>
+      ) : (
+        <>
+          {/* Score + updated */}
+          <div className="flex items-center gap-5 bg-[#0f131c] border border-[#1e2533] rounded-xl p-4">
+            <ScoreRing score={score!} />
+            <div className="flex-1 space-y-1.5">
+              {Object.entries(components).map(([key, _v]) => { const val = _v as number; return (
+                <div key={key} className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-500">{COMP_LABEL[key] ?? key}</span>
+                  <div className="flex items-center gap-2 w-24">
+                    <div className="flex-1 h-1 bg-[#1e2533] rounded-full overflow-hidden">
+                      <div className={clsx("h-full rounded-full",
+                        val >= 80 ? "bg-emerald-500" : val >= 50 ? "bg-amber-500" : "bg-red-500"
+                      )} style={{ width: `${val}%` }} />
+                    </div>
+                    <span className={clsx("font-bold tabular-nums w-6 text-right",
+                      val >= 80 ? "text-emerald-400" : val >= 50 ? "text-amber-400" : "text-red-400"
+                    )}>{val}</span>
+                  </div>
+                </div>
+              ); })}
+              {(m?.updated_at as string | undefined) && (
+                <p className="text-[10px] text-slate-700 pt-1">
+                  Updated {new Date(m!.updated_at as string).toLocaleTimeString()}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* 24h sparkline */}
+          {history && history.length > 1 && (
+            <div className="bg-[#0f131c] border border-[#1e2533] rounded-xl p-4">
+              <p className="text-[11px] text-slate-500 mb-2">Health score — last 24 h</p>
+              <Sparkline points={history} />
+            </div>
+          )}
+
+          {/* Metric gauges */}
+          {metrics && (
+            <div className="bg-[#0f131c] border border-[#1e2533] rounded-xl p-4 space-y-4">
+              <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">System Metrics</p>
+
+              <Gauge label={`CPU usage (${metrics.cpu_count ?? "?"} cores)`}
+                value={metrics.cpu_used_pct as number} warn={70} danger={85} />
+              <Gauge label={`Load avg 1m / core`}
+                value={typeof metrics.load_avg_1m === "number" && typeof metrics.cpu_count === "number"
+                  ? Math.round((metrics.load_avg_1m / metrics.cpu_count) * 100) / 100
+                  : undefined}
+                max={3} unit="" warn={67} danger={100} />
+              <Gauge label="I/O wait" value={metrics.iowait_pct as number} warn={15} danger={30} />
+
+              <div className="border-t border-[#1e2533] pt-3 space-y-3">
+                <Gauge label={`Memory  (${metrics.mem_available_mb != null ? Math.round(metrics.mem_available_mb as number / 1024) : "?"}GB free)`}
+                  value={metrics.mem_used_pct as number} warn={75} danger={90} />
+                {(metrics.swap_total_mb as number) > 0 && (
+                  <Gauge label="Swap" value={metrics.swap_used_pct as number} warn={20} danger={60} />
+                )}
+              </div>
+
+              <div className="border-t border-[#1e2533] pt-3 space-y-3">
+                {((metrics.disk_mounts as {mount:string;used_pct:number;free_gb:number;inode_used_pct:number}[]) ?? []).map(d => (
+                  <Gauge key={d.mount}
+                    label={`Disk ${d.mount}  (${d.free_gb}GB free)`}
+                    value={d.used_pct} warn={80} danger={90} />
+                ))}
+              </div>
+
+              <div className="border-t border-[#1e2533] pt-3 space-y-3">
+                <Gauge label={`File descriptors  (${metrics.fd_open ?? "?"} / ${metrics.fd_max ?? "?"})`}
+                  value={metrics.fd_used_pct as number} warn={50} danger={80} />
+                <Gauge label={`Processes  (${metrics.process_count ?? "?"} / ${metrics.process_max ?? "?"})`}
+                  value={metrics.process_used_pct as number} warn={50} danger={80} />
+              </div>
+
+              <div className="border-t border-[#1e2533] pt-3 space-y-3">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-slate-500">TCP established</span>
+                  <span className="text-slate-300 font-mono">{(metrics.tcp_established as number) ?? "—"}</span>
+                </div>
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-slate-500">TCP TIME_WAIT</span>
+                  <span className="text-slate-300 font-mono">{(metrics.tcp_time_wait as number) ?? "—"}</span>
+                </div>
+                {metrics.uptime_seconds != null && (
+                  <div className="flex justify-between text-[11px]">
+                    <span className="text-slate-500">Uptime</span>
+                    <span className="text-slate-300 font-mono">
+                      {Math.floor((metrics.uptime_seconds as number) / 86400)}d{" "}
+                      {Math.floor(((metrics.uptime_seconds as number) % 86400) / 3600)}h
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
 }

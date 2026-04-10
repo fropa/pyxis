@@ -24,21 +24,37 @@ SILENT_THRESHOLD_SECONDS = 180
 
 def _compute_status(node: Node) -> str:
     """
-    Compute real-time effective status from last_heartbeat_at.
-    Only overrides stored status for agent-managed nodes (those that have ever sent a heartbeat).
-    Auto-discovered nodes without an agent retain their stored status.
+    Compute real-time effective status.
+    Priority:
+      1. Heartbeat age (liveness check) — overrides everything
+      2. Health score from latest metrics — overrides stored status
+      3. Stored status (fallback for auto-discovered nodes without an agent)
     """
     if node.last_heartbeat_at is None:
         return node.status  # no agent — trust stored value
+
     lh = node.last_heartbeat_at
     if lh.tzinfo is None:
         lh = lh.replace(tzinfo=timezone.utc)
     age = (datetime.now(timezone.utc) - lh).total_seconds()
+
+    # Liveness takes absolute priority
     if age >= SILENT_THRESHOLD_SECONDS:
         return "down"
     if age >= DEGRADED_THRESHOLD_SECONDS:
         return "degraded"
-    return "healthy"
+
+    # Node is alive — let health score decide
+    health = (node.metadata_ or {}).get("health") or {}
+    score = health.get("score")
+    if score is not None:
+        if score >= 80:
+            return "healthy"
+        if score >= 50:
+            return "degraded"
+        return "critical"
+
+    return "healthy"  # alive but no metrics yet
 
 
 class NodeOut(BaseModel):
@@ -50,6 +66,8 @@ class NodeOut(BaseModel):
     cluster: str | None
     status: str
     last_heartbeat_at: datetime | None = None
+    health_score: int | None = None       # 0-100, None if no metrics yet
+    health_components: dict[str, int] = {}
     labels: dict[str, Any]
     metadata: dict[str, Any]
 
@@ -109,6 +127,10 @@ async def get_topology(
         if not (e.metadata_ or {}).get("hidden")
     ]
 
+    def _health(n: Node) -> tuple[int | None, dict]:
+        h = (n.metadata_ or {}).get("health") or {}
+        return h.get("score"), h.get("components") or {}
+
     return TopologyOut(
         nodes=[NodeOut(
             id=n.id,
@@ -119,6 +141,8 @@ async def get_topology(
             cluster=n.cluster,
             status=_compute_status(n),
             last_heartbeat_at=n.last_heartbeat_at,
+            health_score=_health(n)[0],
+            health_components=_health(n)[1],
             labels=n.labels,
             metadata=n.metadata_,
         ) for n in nodes],

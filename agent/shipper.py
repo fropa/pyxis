@@ -843,6 +843,311 @@ def autoupdate_loop() -> None:
             log.warning("Auto-update check failed: %s", e)
 
 
+# ── System health metrics ─────────────────────────────────────────────────────
+
+METRICS_URL      = f"{API_URL}/api/v1/metrics/report"
+METRICS_INTERVAL = int(os.environ.get("PYXIS_METRICS_INTERVAL", "60"))
+
+# Two-sample CPU tracking (delta between readings gives real %)
+_prev_cpu_stat: dict | None = None
+_prev_cpu_lock  = threading.Lock()
+
+
+def _read_cpu_stat() -> dict | None:
+    try:
+        with open("/proc/stat") as f:
+            line = f.readline()
+        parts = line.split()
+        if parts[0] != "cpu":
+            return None
+        vals = [int(x) for x in parts[1:11]]
+        return {
+            "user": vals[0], "nice": vals[1], "system": vals[2],
+            "idle": vals[3],
+            "iowait": vals[4] if len(vals) > 4 else 0,
+            "total": sum(vals),
+        }
+    except Exception:
+        return None
+
+
+def _cpu_delta_pct() -> tuple[float, float]:
+    """Return (cpu_used_pct, iowait_pct) computed from delta between last two /proc/stat reads."""
+    global _prev_cpu_stat
+    curr = _read_cpu_stat()
+    if curr is None:
+        return 0.0, 0.0
+    with _prev_cpu_lock:
+        prev = _prev_cpu_stat
+        _prev_cpu_stat = curr
+    if prev is None:
+        return 0.0, 0.0
+    dt = curr["total"] - prev["total"]
+    if dt == 0:
+        return 0.0, 0.0
+    used_pct   = round((1 - (curr["idle"] - prev["idle"]) / dt) * 100, 1)
+    iowait_pct = round((curr["iowait"] - prev["iowait"]) / dt * 100, 1)
+    return max(0.0, used_pct), max(0.0, iowait_pct)
+
+
+def _collect_system_metrics() -> dict:
+    """Collect CPU, memory, disk, I/O, FD, process, and TCP metrics from /proc."""
+    m: dict = {}
+
+    # ── CPU count + load average ──────────────────────────────────────────────
+    try:
+        m["cpu_count"] = os.cpu_count() or 1
+    except Exception:
+        m["cpu_count"] = 1
+
+    try:
+        with open("/proc/loadavg") as f:
+            p = f.read().split()
+        m["load_avg_1m"]  = float(p[0])
+        m["load_avg_5m"]  = float(p[1])
+        m["load_avg_15m"] = float(p[2])
+    except Exception:
+        pass
+
+    # ── CPU usage % (two-sample delta) ───────────────────────────────────────
+    cpu_used, iowait = _cpu_delta_pct()
+    m["cpu_used_pct"]  = cpu_used
+    m["iowait_pct"]    = iowait
+
+    # ── Memory from /proc/meminfo ─────────────────────────────────────────────
+    try:
+        mi: dict[str, int] = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 2:
+                    mi[parts[0].rstrip(":")] = int(parts[1])
+        total     = mi.get("MemTotal", 0)
+        available = mi.get("MemAvailable", mi.get("MemFree", 0))
+        used      = total - available
+        swap_t    = mi.get("SwapTotal", 0)
+        swap_f    = mi.get("SwapFree", 0)
+        m["mem_total_mb"]     = total // 1024
+        m["mem_available_mb"] = available // 1024
+        m["mem_used_mb"]      = used // 1024
+        m["mem_used_pct"]     = round(used / total * 100, 1) if total else 0.0
+        m["swap_total_mb"]    = swap_t // 1024
+        m["swap_used_mb"]     = (swap_t - swap_f) // 1024
+        m["swap_used_pct"]    = round((swap_t - swap_f) / swap_t * 100, 1) if swap_t else 0.0
+    except Exception:
+        pass
+
+    # ── Disk usage per mount ──────────────────────────────────────────────────
+    try:
+        _SKIP_FS = {"tmpfs","devtmpfs","sysfs","proc","devpts","cgroup","cgroup2",
+                    "overlay","aufs","squashfs","fuse.lxcfs","hugetlbfs","mqueue",
+                    "securityfs","debugfs","tracefs","bpf","pstore","configfs"}
+        seen_devs: set[str] = set()
+        disk_mounts = []
+        with open("/proc/mounts") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                device, mount, fstype = parts[0], parts[1], parts[2]
+                if fstype in _SKIP_FS or device in seen_devs:
+                    continue
+                if not device.startswith("/dev") and not device.startswith("//"):
+                    continue
+                seen_devs.add(device)
+                try:
+                    st = os.statvfs(mount)
+                    blk_total = st.f_blocks * st.f_frsize
+                    blk_free  = st.f_bfree  * st.f_frsize
+                    blk_used  = blk_total - blk_free
+                    used_pct  = round(blk_used / blk_total * 100, 1) if blk_total else 0.0
+                    free_gb   = round(blk_free / 1073741824, 1)
+                    ino_total = st.f_files
+                    ino_free  = st.f_ffree
+                    ino_pct   = round((ino_total - ino_free) / ino_total * 100, 1) if ino_total else 0.0
+                    disk_mounts.append({
+                        "mount": mount, "device": device,
+                        "used_pct": used_pct, "free_gb": free_gb,
+                        "inode_used_pct": ino_pct,
+                    })
+                except (PermissionError, OSError):
+                    pass
+        m["disk_mounts"] = disk_mounts
+    except Exception:
+        pass
+
+    # ── Open file descriptors ─────────────────────────────────────────────────
+    try:
+        with open("/proc/sys/fs/file-nr") as f:
+            fd_open = int(f.read().split()[0])
+        with open("/proc/sys/fs/file-max") as f:
+            fd_max = int(f.read().strip())
+        m["fd_open"]     = fd_open
+        m["fd_max"]      = fd_max
+        m["fd_used_pct"] = round(fd_open / fd_max * 100, 1) if fd_max else 0.0
+    except Exception:
+        pass
+
+    # ── TCP connection counts ─────────────────────────────────────────────────
+    try:
+        established = time_wait = 0
+        for tcp_f in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                with open(tcp_f) as f:
+                    for line in f:
+                        st = line.split()
+                        if len(st) < 4:
+                            continue
+                        if st[3] == "01":
+                            established += 1
+                        elif st[3] == "06":
+                            time_wait += 1
+            except OSError:
+                pass
+        m["tcp_established"] = established
+        m["tcp_time_wait"]   = time_wait
+        try:
+            with open("/proc/sys/net/core/somaxconn") as f:
+                m["tcp_somaxconn"] = int(f.read().strip())
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # ── Process count vs system limit ─────────────────────────────────────────
+    try:
+        proc_count = sum(1 for p in os.listdir("/proc") if p.isdigit())
+        m["process_count"] = proc_count
+        with open("/proc/sys/kernel/threads-max") as f:
+            m["process_max"] = int(f.read().strip())
+        m["process_used_pct"] = round(proc_count / m["process_max"] * 100, 1) if m.get("process_max") else 0.0
+    except Exception:
+        pass
+
+    # ── Uptime ────────────────────────────────────────────────────────────────
+    try:
+        with open("/proc/uptime") as f:
+            m["uptime_seconds"] = int(float(f.read().split()[0]))
+    except Exception:
+        pass
+
+    return m
+
+
+def _score_pct(pct: float, thresholds: list[tuple[float, int]]) -> int:
+    """Map a percentage to a score using a threshold table [(pct_limit, score), ...]."""
+    for limit, score in thresholds:
+        if pct < limit:
+            return score
+    return thresholds[-1][1]
+
+
+def compute_health_score(m: dict) -> tuple[int, dict]:
+    """
+    Compute a 0-100 health score from raw metrics.
+    Returns (overall_score, {component: score}) where lower = worse.
+    """
+    components: dict[str, int] = {}
+
+    # CPU: use cpu_used_pct; also penalise if load queue is deep
+    if "cpu_used_pct" in m:
+        s = _score_pct(m["cpu_used_pct"], [
+            (50, 100), (70, 90), (85, 70), (95, 35), (100, 10),
+        ])
+        # Extra load-queue penalty: load/core > 1.5 means jobs are queuing
+        load_norm = m.get("load_avg_1m", 0) / max(m.get("cpu_count", 1), 1)
+        if load_norm > 2.0:   s = min(s, 15)
+        elif load_norm > 1.5: s = min(s, 35)
+        elif load_norm > 1.0: s = min(s, 60)
+        components["cpu"] = s
+
+    # Memory
+    if "mem_used_pct" in m:
+        s = _score_pct(m["mem_used_pct"], [
+            (60, 100), (75, 85), (85, 60), (92, 30), (97, 10), (100, 5),
+        ])
+        # Swap pressure amplifies memory stress
+        swap_pct = m.get("swap_used_pct", 0)
+        if swap_pct > 80:   s = min(s, 15)
+        elif swap_pct > 50: s = min(s, 40)
+        elif swap_pct > 20: s = max(s - 10, 10)
+        components["memory"] = s
+
+    # Disk: worst mount (space), then also check inodes
+    if "disk_mounts" in m and m["disk_mounts"]:
+        worst_space = max(d["used_pct"] for d in m["disk_mounts"])
+        worst_inode = max(d.get("inode_used_pct", 0) for d in m["disk_mounts"])
+        s = _score_pct(worst_space, [
+            (70, 100), (80, 85), (90, 55), (95, 25), (99, 8), (100, 2),
+        ])
+        # Inode exhaustion is just as bad as space exhaustion
+        if worst_inode > 95:   s = min(s, 10)
+        elif worst_inode > 85: s = min(s, 40)
+        components["disk"] = s
+
+    # I/O wait
+    if "iowait_pct" in m:
+        components["io"] = _score_pct(m["iowait_pct"], [
+            (5, 100), (15, 75), (30, 50), (50, 20), (100, 5),
+        ])
+
+    # File descriptors
+    if "fd_used_pct" in m:
+        components["file_descriptors"] = _score_pct(m["fd_used_pct"], [
+            (50, 100), (75, 80), (90, 40), (95, 15), (100, 5),
+        ])
+
+    # Processes vs limit
+    if "process_used_pct" in m:
+        components["processes"] = _score_pct(m["process_used_pct"], [
+            (50, 100), (75, 80), (90, 40), (95, 15), (100, 5),
+        ])
+
+    if not components:
+        return 100, {}
+
+    weights = {
+        "cpu": 0.28, "memory": 0.28, "disk": 0.24,
+        "io": 0.10, "file_descriptors": 0.06, "processes": 0.04,
+    }
+    total_w = sum(weights.get(k, 0.05) for k in components)
+    score = sum(components[k] * weights.get(k, 0.05) for k in components) / total_w
+    return max(0, min(100, round(score))), components
+
+
+def metrics_loop() -> None:
+    """Collect system metrics every METRICS_INTERVAL seconds and report to backend."""
+    # Warm up CPU delta (first reading is always 0)
+    _read_cpu_stat()
+    time.sleep(2)
+    _cpu_delta_pct()
+
+    while True:
+        time.sleep(METRICS_INTERVAL)
+        try:
+            raw = _collect_system_metrics()
+            score, components = compute_health_score(raw)
+            payload = json.dumps({
+                "node_name": NODE_NAME,
+                "metrics": raw,
+                "health_score": score,
+                "health_components": components,
+            }).encode()
+            req = urllib.request.Request(
+                METRICS_URL,
+                data=payload,
+                headers={"Content-Type": "application/json", "X-API-Key": API_KEY},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp.read()
+            log.debug("metrics: reported score=%d components=%s", score, components)
+        except urllib.error.URLError as e:
+            log.debug("metrics: backend unreachable (%s)", e.reason)
+        except Exception as e:
+            log.warning("metrics loop error: %s", e)
+
+
 # ── Network connection reporter ───────────────────────────────────────────────
 
 CONNECTIONS_URL = f"{API_URL}/api/v1/connections/report"
@@ -1228,7 +1533,8 @@ def main() -> None:
     threading.Thread(target=exec_loop, daemon=True).start()
     threading.Thread(target=autoupdate_loop, daemon=True).start()
     threading.Thread(target=network_connections_loop, daemon=True).start()
-    log.info("Remote exec + auto-update + network connection reporter enabled")
+    threading.Thread(target=metrics_loop, daemon=True).start()
+    log.info("Remote exec + auto-update + network connection reporter + health metrics enabled")
 
     if "syslog" in sources:
         start_syslog_tailers()

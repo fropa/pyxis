@@ -11,6 +11,7 @@ import ReactFlow, {
   Handle,
   Position,
   NodeProps,
+  MarkerType,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import type { Topology, TopologyNode } from "../../api/client";
@@ -22,6 +23,7 @@ import clsx from "clsx";
 const STATUS_BORDER: Record<string, string> = {
   healthy:  "border-success",
   degraded: "border-warning",
+  critical: "border-red-500",
   down:     "border-danger",
   unknown:  "border-slate-300",
 };
@@ -29,6 +31,7 @@ const STATUS_BORDER: Record<string, string> = {
 const STATUS_SHADOW: Record<string, string> = {
   healthy:  "",
   degraded: "shadow-[0_0_12px_rgba(217,119,6,0.25)]",
+  critical: "shadow-[0_0_16px_rgba(239,68,68,0.45)]",
   down:     "shadow-[0_0_12px_rgba(220,38,38,0.3)]",
   unknown:  "",
 };
@@ -36,13 +39,21 @@ const STATUS_SHADOW: Record<string, string> = {
 const STATUS_DOT: Record<string, string> = {
   healthy:  "bg-success",
   degraded: "bg-warning",
+  critical: "bg-red-500",
   down:     "bg-danger",
   unknown:  "bg-slate-400",
 };
 
 const STATUS_DOT_PULSE: Record<string, boolean> = {
-  healthy: false, degraded: true, down: true, unknown: false,
+  healthy: false, degraded: true, critical: true, down: true, unknown: false,
 };
+
+function _scoreColor(score: number): string {
+  if (score >= 80) return "text-emerald-500";
+  if (score >= 50) return "text-amber-500";
+  if (score >= 20) return "text-red-500";
+  return "text-red-700";
+}
 
 // ── Kind meta ──────────────────────────────────────────────────────────────────
 
@@ -137,11 +148,18 @@ const InfraNode = memo(({ data }: NodeProps<NodeData>) => {
             />
           </span>
         </div>
-        <p className="text-[12px] font-semibold text-slate-800 truncate leading-tight">
-          {node.name}
-        </p>
+        <div className="flex items-center justify-between">
+          <p className="text-[12px] font-semibold text-slate-800 truncate leading-tight flex-1 min-w-0">
+            {node.name}
+          </p>
+          {node.health_score != null && (
+            <span className={clsx("text-[11px] font-bold tabular-nums ml-1 flex-shrink-0", _scoreColor(node.health_score))}>
+              {node.health_score}
+            </span>
+          )}
+        </div>
         <p className="text-[10px] text-slate-400 mt-0.5">{meta.label}</p>
-        {node.metadata?.ip_address && (
+        {typeof node.metadata?.ip_address === "string" && (
           <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
             {node.metadata.ip_address}
           </p>
@@ -150,10 +168,12 @@ const InfraNode = memo(({ data }: NodeProps<NodeData>) => {
           <p className={clsx(
             "text-[10px] mt-0.5 font-medium",
             status === "down" ? "text-red-500" :
+            status === "critical" ? "text-red-400" :
             status === "degraded" ? "text-amber-500" :
             "text-slate-400"
           )}>
-            {status === "down" ? "⚠ " : ""}beat {_ago(node.last_heartbeat_at)}
+            {status === "down" ? "⚠ offline " : ""}
+            {status !== "down" && `beat ${_ago(node.last_heartbeat_at)}`}
           </p>
         )}
       </div>
@@ -217,7 +237,7 @@ function buildFlowEdges(edges: Topology["edges"]): Edge[] {
       labelStyle: { fill: color, fontSize: 9, fontWeight: 500, opacity },
       labelBgStyle: { fill: "#ffffff", fillOpacity: 0.85, rx: 3 },
       labelBgPadding: [3, 5] as [number, number],
-      markerEnd: { type: "arrowclosed" as const, color, width: 14, height: 14 },
+      markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
     };
   });
 }
@@ -284,9 +304,10 @@ export default function TopologyGraph({
         <MiniMap
           nodeColor={(n) => {
             const s = (n.data as NodeData)?.node?.status ?? "unknown";
-            return s === "healthy" ? "#16a34a"
+            return s === "healthy"  ? "#16a34a"
                  : s === "degraded" ? "#d97706"
-                 : s === "down" ? "#dc2626"
+                 : s === "critical" ? "#ef4444"
+                 : s === "down"     ? "#991b1b"
                  : "#94a3b8";
           }}
           maskColor="rgba(241,245,249,0.7)"

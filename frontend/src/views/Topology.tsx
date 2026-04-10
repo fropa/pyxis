@@ -60,6 +60,7 @@ export default function TopologyView() {
   const nodeCount    = topology?.nodes.length ?? 0;
   const healthyCount = topology?.nodes.filter((n) => n.status === "healthy").length ?? 0;
   const degradedCount = topology?.nodes.filter((n) => n.status === "degraded").length ?? 0;
+  const criticalCount = topology?.nodes.filter((n) => n.status === "critical").length ?? 0;
   const downCount    = topology?.nodes.filter((n) => n.status === "down").length ?? 0;
 
   return (
@@ -91,6 +92,12 @@ export default function TopologyView() {
                   <span className="flex items-center gap-1.5 text-warning-text font-medium">
                     <span className="w-1.5 h-1.5 rounded-full bg-warning" />
                     {degradedCount} degraded
+                  </span>
+                )}
+                {criticalCount > 0 && (
+                  <span className="flex items-center gap-1.5 text-red-400 font-medium">
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                    {criticalCount} critical
                   </span>
                 )}
                 {downCount > 0 && (
