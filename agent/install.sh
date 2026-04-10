@@ -150,7 +150,7 @@ PrivateTmp=true
 
 # Make / read-only; allow writes only to agent's own data dirs
 ProtectSystem=strict
-ReadWritePaths=${DATA_DIR}
+ReadWritePaths=${DATA_DIR} ${INSTALL_DIR}/logs
 ReadOnlyPaths=/var/log /opt/pyxis /proc/net
 
 # Home directories are off-limits
