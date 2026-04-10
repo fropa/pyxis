@@ -64,6 +64,38 @@ ALWAYS_FIRE = {
 }
 
 
+# ── Noise patterns — never open an incident for these ────────────────────────
+# Systemd config warnings, agent bootstrap messages, known-safe infra noise.
+
+NEVER_FIRE_PATTERNS = [
+    # Systemd unknown/ignored directive warnings
+    "unknown key",
+    "unknown lvalue",
+    "ignoring",
+    # Agent own log messages
+    "pyxis-agent",
+    "pyxis agent",
+    "pyxis shipper",
+    # Systemd routine lifecycle
+    "started pyxis",
+    "stopped pyxis",
+    "deactivated successfully",
+    "scheduled restart job",
+    # SSH keepalives / routine auth
+    "received disconnect",
+    "disconnected from",
+    "connection closed by",
+    # Package manager noise
+    "apt-get",
+    "dpkg",
+]
+
+
+def _is_noise(message: str) -> bool:
+    text = message.lower()
+    return any(pat in text for pat in NEVER_FIRE_PATTERNS)
+
+
 def _should_always_fire(message: str, fingerprint: str) -> bool:
     text = (message + " " + fingerprint).lower()
     return any(sig.lower() in text for sig in ALWAYS_FIRE)
@@ -84,6 +116,10 @@ async def should_open_incident(
     now = time.time()
     window_key = f"rate:{tenant_id}:{fingerprint}"
     baseline_key = f"baseline:{tenant_id}:{fingerprint}"
+
+    # Noise gate — drop known-safe infrastructure messages immediately
+    if _is_noise(message):
+        return False, "noise_filtered"
 
     # Record this event in the sliding window
     await redis.zadd(window_key, {event_id: now})

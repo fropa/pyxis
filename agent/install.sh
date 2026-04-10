@@ -165,14 +165,7 @@ ProtectHome=true
 CapabilityBoundingSet=
 AmbientCapabilities=
 
-# Prevent loading kernel modules
 ProtectKernelModules=true
-
-# Hide kernel variables from /proc
-ProtectKernelVariables=true
-
-# No access to kernel tunables
-ProtectKernelLogs=true
 
 # Restrict to common system calls only
 SystemCallFilter=@system-service
