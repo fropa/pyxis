@@ -8,6 +8,7 @@ This process handles:
 - Periodic: incident auto-resolve every 5 min
 """
 from arq.connections import RedisSettings
+from arq import cron
 
 from app.core.config import get_settings
 from app.tasks.rca import run_rca_task, check_silent_nodes_task
@@ -31,24 +32,9 @@ class WorkerSettings:
     functions = [run_rca_task]
 
     cron_jobs = [
-        # Check for silent nodes every 2 minutes
-        {
-            "name": "check_silent_nodes",
-            "coroutine": check_silent_nodes_task,
-            "minute": {i for i in range(0, 60, 2)},
-        },
-        # Auto-resolve quiet incidents every 5 minutes
-        {
-            "name": "auto_resolve",
-            "coroutine": auto_resolve_incidents,
-            "minute": {i for i in range(0, 60, 5)},
-        },
-        # Auto-discover topology every 10 minutes
-        {
-            "name": "topology_discovery",
-            "coroutine": discover_topology_task,
-            "minute": {i for i in range(0, 60, 10)},
-        },
+        cron(check_silent_nodes_task, minute={i for i in range(0, 60, 2)}),
+        cron(auto_resolve_incidents,  minute={i for i in range(0, 60, 5)}),
+        cron(discover_topology_task,  minute={i for i in range(0, 60, 10)}),
     ]
 
     redis_settings = _redis_settings()

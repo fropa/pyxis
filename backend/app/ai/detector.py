@@ -72,10 +72,14 @@ NEVER_FIRE_PATTERNS = [
     "unknown key",
     "unknown lvalue",
     "ignoring",
-    # Agent own log messages
+    # Agent own log messages — agent ingests its own shipper.log
     "pyxis-agent",
     "pyxis agent",
     "pyxis shipper",
+    "flushed",           # "Flushed N events to backend"
+    "heartbeat",
+    "node registered",
+    "tailing",
     # Systemd routine lifecycle
     "started pyxis",
     "stopped pyxis",
