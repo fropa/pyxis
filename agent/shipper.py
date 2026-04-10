@@ -1554,8 +1554,18 @@ def main() -> None:
             log.info("Custom log path: %s", path)
 
     if "pipeline" in sources:
-        read_stdin_pipeline()
-        return
+        # Only block on stdin when it's actually a pipe (not /dev/null from systemd)
+        try:
+            import stat as _stat
+            _mode = os.fstat(sys.stdin.fileno()).st_mode
+            _is_pipe = _stat.S_ISFIFO(_mode) or _stat.S_ISREG(_mode)
+        except Exception:
+            _is_pipe = False
+        if _is_pipe:
+            read_stdin_pipeline()
+            return
+        else:
+            log.warning("'pipeline' source requested but stdin is not a pipe — ignoring")
 
     # Keep main thread alive
     try:

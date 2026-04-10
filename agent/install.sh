@@ -85,6 +85,11 @@ EOF
 chown root:"${AGENT_GROUP}" "${INSTALL_DIR}/.env"
 chmod 640 "${INSTALL_DIR}/.env"
 
+# Reset persisted config so stale sources from a previous install don't override
+printf '{}' > "${INSTALL_DIR}/config.json"
+chown root:"${AGENT_GROUP}" "${INSTALL_DIR}/config.json"
+chmod 640 "${INSTALL_DIR}/config.json"
+
 # Set ownership — logs dir must be writable by the agent user
 mkdir -p "${INSTALL_DIR}/logs"
 chown -R root:"${AGENT_GROUP}" "${INSTALL_DIR}"
