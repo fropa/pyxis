@@ -85,10 +85,11 @@ EOF
 chown root:"${AGENT_GROUP}" "${INSTALL_DIR}/.env"
 chmod 640 "${INSTALL_DIR}/.env"
 
-# Set ownership
+# Set ownership — logs dir must be writable by the agent user
+mkdir -p "${INSTALL_DIR}/logs"
 chown -R root:"${AGENT_GROUP}" "${INSTALL_DIR}"
-chown -R "${AGENT_USER}":"${AGENT_GROUP}" "${DATA_DIR}"
-chmod 750 "${INSTALL_DIR}" "${DATA_DIR}"
+chown -R "${AGENT_USER}":"${AGENT_GROUP}" "${DATA_DIR}" "${INSTALL_DIR}/logs"
+chmod 750 "${INSTALL_DIR}" "${DATA_DIR}" "${INSTALL_DIR}/logs"
 
 # ── Sudoers: minimal read-only commands that need elevated access ─────────────
 # ss -tnp requires root only for process names; we limit it strictly.
